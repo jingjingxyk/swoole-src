@@ -6,7 +6,7 @@ set(SWOOLE_VERSION 5.0.1)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wall -g")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall")
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.21)
 
 file(READ ./config.h SWOOLE_CONFIG_FILE)
 
@@ -68,6 +68,21 @@ add_definitions(-DHAVE_CONFIG_H)
 
 include_directories(BEFORE ./include ./include/wrapper ext-src/ thirdparty/ ./)
 SET(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
+
+# find C-ares
+if (DEFINED cares-dir)
+    include_directories(BEFORE ${cares-dir}/include)
+    link_directories(${cares-dir}/lib)
+else()
+    find_package(cares)
+    if (${CARES_FOUND})
+        message(STATUS "Found c-ares, ${CARES_LIBRARIES}")
+        include_directories(BEFORE ${CARES_INCLUDE_DIR})
+        list(APPEND SWOOLE_LINK_LIBRARIES cares)
+    else()
+        message(STATUS "Not found c-ares")
+    endif()
+endif()
 
 # find OpenSSL
 if (DEFINED openssl_dir)

@@ -56,6 +56,11 @@ PHP_ARG_ENABLE([cares],
   [AS_HELP_STRING([--enable-cares],
     [Enable cares])], [no], [no])
 
+PHP_ARG_WITH([cares_dir],
+  [dir of cares],
+  [AS_HELP_STRING([[--with-cares-dir[=DIR]]],
+    [Include c-cares support ])], [no], [no])
+
 PHP_ARG_WITH([openssl_dir],
   [dir of openssl],
   [AS_HELP_STRING([[--with-openssl-dir[=DIR]]],
