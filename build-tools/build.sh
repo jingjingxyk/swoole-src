@@ -32,7 +32,7 @@ phpize
 --enable-mysqlnd  \
 --enable-swoole-curl \
 --enable-cares  \
---enable-brotli=/usr/cares \
+--enable-brotli \
 --with-cares-dir=/usr/cares \
 --with-openssl-dir=/usr/openssl
 
