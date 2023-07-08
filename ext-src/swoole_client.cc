@@ -386,7 +386,7 @@ bool php_swoole_client_check_setting(Client *cli, zval *zset) {
      * package max length
      */
     if (php_swoole_array_get_value(vht, "package_max_length", ztmp)) {
-        zend_long v = zval_get_long(ztmp);
+        zend_long v = php_swoole_parse_to_size(ztmp);
         cli->protocol.package_max_length = SW_MAX(0, SW_MIN(v, UINT32_MAX));
     } else {
         cli->protocol.package_max_length = SW_INPUT_BUFFER_SIZE;
@@ -395,18 +395,18 @@ bool php_swoole_client_check_setting(Client *cli, zval *zset) {
      * socket send/recv buffer size
      */
     if (php_swoole_array_get_value(vht, "socket_buffer_size", ztmp)) {
-        zend_long v = zval_get_long(ztmp);
+        zend_long v = php_swoole_parse_to_size(ztmp);
         value = SW_MAX(1, SW_MIN(v, INT_MAX));
         cli->socket->set_buffer_size(value);
         cli->socket->buffer_size = value;
     }
     if (php_swoole_array_get_value(vht, "buffer_high_watermark", ztmp)) {
-        zend_long v = zval_get_long(ztmp);
+        zend_long v = php_swoole_parse_to_size(ztmp);
         value = SW_MAX(0, SW_MIN(v, UINT32_MAX));
         cli->buffer_high_watermark = value;
     }
     if (php_swoole_array_get_value(vht, "buffer_low_watermark", ztmp)) {
-        zend_long v = zval_get_long(ztmp);
+        zend_long v = php_swoole_parse_to_size(ztmp);
         value = SW_MAX(0, SW_MIN(v, UINT32_MAX));
         cli->buffer_low_watermark = value;
     }
@@ -584,7 +584,7 @@ static Client *php_swoole_client_new(zval *zobject, char *host, int host_len, in
     }
 
     long type = Z_LVAL_P(ztype);
-    int client_type = php_swoole_socktype(type);
+    int client_type = php_swoole_get_socket_type(type);
     if ((client_type == SW_SOCK_TCP || client_type == SW_SOCK_TCP6) && (port <= 0 || port > SW_CLIENT_MAX_PORT)) {
         php_swoole_fatal_error(E_WARNING, "The port is invalid");
         swoole_set_last_error(SW_ERROR_INVALID_PARAMS);
@@ -623,7 +623,7 @@ static Client *php_swoole_client_new(zval *zobject, char *host, int host_len, in
         }
     } else {
     _create_socket:
-        cli = new Client(php_swoole_socktype(type), false);
+        cli = new Client(php_swoole_get_socket_type(type), false);
         if (cli->socket == nullptr) {
             php_swoole_sys_error(E_WARNING, "Client_create() failed");
             zend_update_property_long(Z_OBJCE_P(zobject), SW_Z8_OBJ_P(zobject), ZEND_STRL("errCode"), errno);
@@ -667,7 +667,7 @@ static PHP_METHOD(swoole_client, __construct) {
         RETURN_FALSE;
     }
 
-    int client_type = php_swoole_socktype(type);
+    int client_type = php_swoole_get_socket_type(type);
     if (client_type < SW_SOCK_TCP || client_type > SW_SOCK_UNIX_DGRAM) {
         const char *space, *class_name = get_active_class_name(&space);
         zend_type_error("%s%s%s() expects parameter %d to be client type, unknown type " ZEND_LONG_FMT " given",
@@ -852,8 +852,8 @@ static PHP_METHOD(swoole_client, sendto) {
         php_swoole_client_set_cli(ZEND_THIS, cli);
     }
 
-    char addr[SW_IP_MAX_LENGTH];
-    char ip[SW_IP_MAX_LENGTH];
+    char addr[INET6_ADDRSTRLEN];
+    char ip[INET6_ADDRSTRLEN];
 
     /**
      * udg doesn't need to use ip and port, so we don't need to deal with SW_SOCK_UNIX_DGRAM
@@ -979,7 +979,6 @@ static PHP_METHOD(swoole_client, recv) {
 
             ret = cli->recv(cli, buf, buf_len, 0);
             if (ret < 0) {
-                swoole_set_last_error(errno);
                 php_swoole_sys_error(E_WARNING, "recv() failed");
                 zend_update_property_long(
                     swoole_client_ce, SW_Z8_OBJ_P(ZEND_THIS), ZEND_STRL("errCode"), swoole_get_last_error());
@@ -1108,7 +1107,6 @@ static PHP_METHOD(swoole_client, recv) {
     }
 
     if (ret < 0) {
-        swoole_set_last_error(errno);
         php_swoole_sys_error(E_WARNING, "recv() failed");
         zend_update_property_long(
             swoole_client_ce, SW_Z8_OBJ_P(ZEND_THIS), ZEND_STRL("errCode"), swoole_get_last_error());

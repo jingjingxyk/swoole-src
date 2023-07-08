@@ -34,6 +34,7 @@ enum swErrorCode {
     SW_ERROR_OPERATION_NOT_SUPPORT,
     SW_ERROR_PROTOCOL_ERROR,
     SW_ERROR_WRONG_OPERATION,
+    SW_ERROR_PHP_RUNTIME_NOTICE, // Non-fatal errors, just runtime warnings
 
     SW_ERROR_FILE_NOT_EXIST = 700,
     SW_ERROR_FILE_TOO_LARGE,
@@ -125,6 +126,7 @@ enum swErrorCode {
     SW_ERROR_HTTP_INVALID_PROTOCOL,
     SW_ERROR_HTTP_PROXY_HANDSHAKE_FAILED,
     SW_ERROR_HTTP_PROXY_BAD_RESPONSE,
+    SW_ERROR_HTTP_CONFLICT_HEADER,
 
     SW_ERROR_WEBSOCKET_BAD_CLIENT = 8501,
     SW_ERROR_WEBSOCKET_BAD_OPCODE,
@@ -183,6 +185,10 @@ enum swErrorCode {
     SW_ERROR_CO_NOT_EXISTS,
     SW_ERROR_CO_CANCELED,
     SW_ERROR_CO_TIMEDOUT,
+
+    // close failed, there are currently other coroutines holding this socket,
+    // need to wait for the bound coroutine to return from the socket wait_event operation
+    SW_ERROR_CO_SOCKET_CLOSE_WAIT,
 
     SW_ERROR_END
 };

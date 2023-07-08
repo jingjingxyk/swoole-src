@@ -22,8 +22,8 @@ using network::Socket;
 static void TaskWorker_signal_init(ProcessPool *pool);
 static int TaskWorker_onPipeReceive(Reactor *reactor, Event *event);
 static int TaskWorker_loop_async(ProcessPool *pool, Worker *worker);
-static void TaskWorker_onStart(ProcessPool *pool, int worker_id);
-static void TaskWorker_onStop(ProcessPool *pool, int worker_id);
+static void TaskWorker_onStart(ProcessPool *pool, Worker *worker);
+static void TaskWorker_onStop(ProcessPool *pool, Worker *worker);
 static int TaskWorker_onTask(ProcessPool *pool, EventData *task);
 
 /**
@@ -47,6 +47,9 @@ void Server::init_task_workers() {
     }
     if (task_ipc_mode == TASK_IPC_PREEMPTIVE) {
         pool->schedule_by_sysvmsg = true;
+    }
+    SW_LOOP_N(task_worker_num) {
+        create_worker(&pool->workers[i]);
     }
 }
 
@@ -167,9 +170,9 @@ static void TaskWorker_signal_init(ProcessPool *pool) {
 #endif
 }
 
-static void TaskWorker_onStart(ProcessPool *pool, int worker_id) {
+static void TaskWorker_onStart(ProcessPool *pool, Worker *worker) {
     Server *serv = (Server *) pool->ptr;
-    SwooleG.process_id = worker_id;
+    SwooleG.process_id = worker->id;
 
     /**
      * Make the task worker support asynchronous
@@ -186,9 +189,8 @@ static void TaskWorker_onStart(ProcessPool *pool, int worker_id) {
     }
 
     TaskWorker_signal_init(pool);
-    serv->worker_start_callback();
+    serv->worker_start_callback(worker);
 
-    Worker *worker = pool->get_worker(worker_id);
     worker->start_time = ::time(nullptr);
     worker->request_count = 0;
     SwooleWG.worker = worker;
@@ -204,10 +206,10 @@ static void TaskWorker_onStart(ProcessPool *pool, int worker_id) {
     }
 }
 
-static void TaskWorker_onStop(ProcessPool *pool, int worker_id) {
+static void TaskWorker_onStop(ProcessPool *pool, Worker *worker) {
     swoole_event_free();
     Server *serv = (Server *) pool->ptr;
-    serv->worker_stop_callback();
+    serv->worker_stop_callback(worker);
 }
 
 /**

@@ -104,9 +104,9 @@ static int http_request_on_header_value(swoole_http_parser *parser, const char *
     if ((parser->method == PHP_HTTP_POST || parser->method == PHP_HTTP_PUT || parser->method == PHP_HTTP_DELETE ||
          parser->method == PHP_HTTP_PATCH) &&
         SW_STRCASEEQ(impl->current_header_name.c_str(), impl->current_header_name.length(), "content-type")) {
-        if (SW_STRCASECT(at, length, "application/x-www-form-urlencoded")) {
+        if (SW_STR_ISTARTS_WITH(at, length, "application/x-www-form-urlencoded")) {
             ctx->post_form_urlencoded = 1;
-        } else if (SW_STRCASECT(at, length, "multipart/form-data")) {
+        } else if (SW_STR_ISTARTS_WITH(at, length, "multipart/form-data")) {
             size_t offset = sizeof("multipart/form-data") - 1;
             char *boundary_str;
             int boundary_len;
@@ -295,7 +295,7 @@ bool Context::end(const char *data, size_t length) {
     if (length > 0) {
         response.headers["Content-Length"] = std::to_string(length);
     }
-    for (auto iter : response.headers) {
+    for (auto &iter : response.headers) {
         size_t n = sw_snprintf(buf, sizeof(buf), "%s: %s\r\n", iter.first.c_str(), iter.second.c_str());
         sw_tg_buffer()->append(buf, n);
     }
@@ -311,7 +311,7 @@ bool Context::end(const char *data, size_t length) {
 }
 
 Context::~Context() {
-    for (auto kv : files) {
+    for (auto &kv : files) {
         if (file_exists(kv.second)) {
             unlink(kv.second.c_str());
         }
@@ -341,7 +341,7 @@ std::shared_ptr<Server> listen(const std::string addr, std::function<void(Contex
         SessionId session_id = req->info.fd;
         Connection *conn = server->get_connection_verify_no_ssl(session_id);
         if (!conn) {
-            swoole_error_log(SW_LOG_NOTICE, SW_ERROR_SESSION_NOT_EXIST, "session[%ld] is closed", session_id);
+            swoole_error_log(SW_LOG_TRACE, SW_ERROR_SESSION_NOT_EXIST, "session[%ld] is closed", session_id);
             return SW_OK;
         }
         ContextImpl impl;

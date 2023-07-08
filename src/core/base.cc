@@ -148,7 +148,6 @@ static void bug_report_message_init() {
 
 #ifdef SW_USE_OPENSSL
     SwooleG.bug_report_message += swoole_ssl_get_version_message();
-
 #endif
 }
 
@@ -294,7 +293,21 @@ SW_API void swoole_set_log_level(int level) {
     }
 }
 
-SW_API void swoole_set_trace_flags(int flags) {
+SW_API int swoole_get_log_level() {
+    if (sw_logger()) {
+        return sw_logger()->get_level();
+    } else {
+        return SW_LOG_NONE;
+    }
+}
+
+SW_API void swoole_set_log_file(const char *file) {
+    if (sw_logger()) {
+        sw_logger()->open(file);
+    }
+}
+
+SW_API void swoole_set_trace_flags(long flags) {
     SwooleG.trace_flags = flags;
 }
 
@@ -346,6 +359,20 @@ bool swoole_set_task_tmpdir(const std::string &dir) {
     }
 
     return true;
+}
+
+pid_t swoole_fork_exec(const std::function<void(void)> &fn) {
+    pid_t pid = fork();
+    switch (pid) {
+    case -1:
+        return false;
+    case 0:
+        fn();
+        exit(0);
+    default:
+        break;
+    }
+    return pid;
 }
 
 pid_t swoole_fork(int flags) {
@@ -542,7 +569,7 @@ ulong_t swoole_hex2dec(const char *hex, size_t *parsed_bytes) {
 #endif
 
 int swoole_rand(int min, int max) {
-    static int _seed = 0;
+    static time_t _seed = 0;
     assert(max > min);
 
     if (_seed == 0) {
@@ -776,17 +803,25 @@ char *swoole_string_format(size_t n, const char *format, ...) {
     return nullptr;
 }
 
+static const char characters[] = {
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U',
+    'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p',
+    'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+};
+
 void swoole_random_string(char *buf, size_t size) {
-    static char characters[] = {
-        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U',
-        'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p',
-        'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-    };
     size_t i = 0;
     for (; i < size; i++) {
         buf[i] = characters[swoole_rand(0, sizeof(characters) - 1)];
     }
     buf[i] = '\0';
+}
+
+void swoole_random_string(std::string &str, size_t size) {
+    size_t i = 0;
+    for (; i < size; i++) {
+        str.append(1, characters[swoole_rand(0, sizeof(characters) - 1)]);
+    }
 }
 
 size_t swoole_random_bytes(char *buf, size_t size) {

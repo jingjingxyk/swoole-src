@@ -54,7 +54,7 @@ int php_swoole_http_server_onReceive(Server *serv, RecvData *req) {
 
     Connection *conn = serv->get_connection_verify_no_ssl(session_id);
     if (!conn) {
-        swoole_error_log(SW_LOG_NOTICE, SW_ERROR_SESSION_NOT_EXIST, "session[%ld] is closed", session_id);
+        swoole_error_log(SW_LOG_TRACE, SW_ERROR_SESSION_NOT_EXIST, "session[%ld] is closed", session_id);
         return SW_ERR;
     }
 
@@ -75,6 +75,7 @@ int php_swoole_http_server_onReceive(Server *serv, RecvData *req) {
 
     HttpContext *ctx = swoole_http_context_new(session_id);
     ctx->init(serv);
+    ctx->onBeforeRequest = swoole_http_server_onBeforeRequest;
 
     zval *zdata = &ctx->request.zdata;
     php_swoole_get_recv_data(serv, zdata, req);
@@ -105,12 +106,29 @@ int php_swoole_http_server_onReceive(Server *serv, RecvData *req) {
     do {
         zval *zserver = ctx->request.zserver;
         Connection *serv_sock = serv->get_connection(conn->server_fd);
+
+        zval tmp;
+        HashTable *ht = Z_ARR_P(zserver);
+
         if (serv_sock) {
-            add_assoc_long(zserver, "server_port", serv_sock->info.get_port());
+            ZVAL_LONG(&tmp, serv_sock->info.get_port());
+            zend_hash_str_add(ht, ZEND_STRL("server_port"), &tmp);
         }
-        add_assoc_long(zserver, "remote_port", conn->info.get_port());
-        add_assoc_string(zserver, "remote_addr", (char *) conn->info.get_ip());
-        add_assoc_long(zserver, "master_time", (int) conn->last_recv_time);
+
+        ZVAL_LONG(&tmp, conn->info.get_port());
+        zend_hash_str_add(ht, ZEND_STRL("remote_port"), &tmp);
+
+        if (conn->info.type == SW_SOCK_TCP && IN_IS_ADDR_LOOPBACK(&conn->info.addr.inet_v4.sin_addr)) {
+            ZVAL_STR_COPY(&tmp, SW_ZSTR_KNOWN(SW_ZEND_STR_ADDR_LOOPBACK_V4));
+        } else if (conn->info.type == SW_SOCK_TCP6 && IN6_IS_ADDR_LOOPBACK(&conn->info.addr.inet_v6.sin6_addr)) {
+            ZVAL_STR_COPY(&tmp, SW_ZSTR_KNOWN(SW_ZEND_STR_ADDR_LOOPBACK_V6));
+        } else {
+            ZVAL_STRING(&tmp, conn->info.get_ip());
+        }
+        zend_hash_str_add(ht, ZEND_STRL("remote_addr"), &tmp);
+
+        ZVAL_LONG(&tmp, (int) conn->last_recv_time);
+        zend_hash_str_add(ht, ZEND_STRL("master_time"), &tmp);
     } while (0);
 
     if (swoole_isset_hook((enum swGlobalHookType) PHP_SWOOLE_HOOK_BEFORE_REQUEST)) {
@@ -122,7 +140,7 @@ int php_swoole_http_server_onReceive(Server *serv, RecvData *req) {
         zend_fcall_info_cache *fci_cache = nullptr;
 
         if (conn->websocket_status == WebSocket::STATUS_CONNECTION) {
-            fci_cache = php_swoole_server_get_fci_cache(serv, server_fd, SW_SERVER_CB_onHandShake);
+            fci_cache = php_swoole_server_get_fci_cache(serv, server_fd, SW_SERVER_CB_onHandshake);
             if (fci_cache == nullptr) {
                 swoole_websocket_onHandshake(serv, port, ctx);
                 goto _dtor_and_return;
@@ -179,9 +197,6 @@ HttpContext *swoole_http_context_new(SessionId fd) {
     object_init_ex(zresponse_object, swoole_http_response_ce);
     php_swoole_http_response_set_context(zresponse_object, ctx);
 
-    zend_update_property_long(swoole_http_request_ce, SW_Z8_OBJ_P(zrequest_object), ZEND_STRL("fd"), fd);
-    zend_update_property_long(swoole_http_response_ce, SW_Z8_OBJ_P(zresponse_object), ZEND_STRL("fd"), fd);
-
     swoole_http_init_and_read_property(
         swoole_http_request_ce, zrequest_object, &ctx->request.zserver, ZEND_STRL("server"));
     swoole_http_init_and_read_property(
@@ -210,8 +225,6 @@ void HttpContext::bind(Server *serv) {
     send = http_context_send_data;
     sendfile = http_context_sendfile;
     close = http_context_disconnect;
-    onBeforeRequest = swoole_http_server_onBeforeRequest;
-    onAfterResponse = swoole_http_server_onAfterResponse;
 }
 
 void HttpContext::copy(HttpContext *ctx) {
@@ -292,6 +305,9 @@ void HttpContext::free() {
         delete form_data_buffer;
         form_data_buffer = nullptr;
     }
+    if (write_buffer) {
+        delete write_buffer;
+    }
     delete this;
 }
 
@@ -319,6 +335,7 @@ bool http_context_send_data(HttpContext *ctx, const char *data, size_t length) {
         zval yield_data, return_value;
         ZVAL_STRINGL(&yield_data, data, length);
         php_swoole_server_send_yield(serv, ctx->fd, &yield_data, &return_value);
+        zval_ptr_dtor(&yield_data);
         return Z_BVAL_P(&return_value);
     }
     return retval;
@@ -335,6 +352,8 @@ static bool http_context_disconnect(HttpContext *ctx) {
 }
 
 bool swoole_http_server_onBeforeRequest(HttpContext *ctx) {
+    ctx->onBeforeRequest = nullptr;
+    ctx->onAfterResponse = swoole_http_server_onAfterResponse;
     Server *serv = (Server *) ctx->private_data;
     SwooleWG.worker->concurrency++;
     sw_atomic_add_fetch(&serv->gs->concurrency, 1);

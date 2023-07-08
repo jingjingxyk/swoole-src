@@ -131,6 +131,7 @@ struct Request {
     uint8_t version;
     uchar excepted : 1;
     uchar too_large : 1;
+    uchar unavailable : 1;
 
     uchar header_parsed : 1;
     uchar tried_to_dispatch : 1;
@@ -144,6 +145,7 @@ struct Request {
     uint32_t url_offset_;
     uint32_t url_length_;
 
+    uint32_t max_length_;
     uint32_t request_line_length_; /* without \r\n  */
     uint32_t header_length_;       /* include request_line_length + \r\n */
     uint64_t content_length_;
@@ -158,7 +160,7 @@ struct Request {
         buffer_ = nullptr;
     }
     ~Request();
-    inline void clean() {
+    void clean() {
         memset(this, 0, offsetof(Request, buffer_));
     }
     int get_protocol();
@@ -168,7 +170,7 @@ struct Request {
     bool parse_multipart_data(String *buffer);
     bool init_multipart_parser(Server *server);
     void destroy_multipart_parser();
-    std::string get_date_if_modified_since();
+    std::string get_header(const char *name);
     bool has_expect_header();
 };
 

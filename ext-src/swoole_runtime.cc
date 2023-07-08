@@ -13,6 +13,7 @@
   | Author:   Tianfeng Han  <mikan.tenny@gmail.com>                      |
   +----------------------------------------------------------------------+
  */
+
 #include "php_swoole_cxx.h"
 #include "swoole_socket.h"
 #include "swoole_util.h"
@@ -22,12 +23,26 @@
 #include "thirdparty/php/curl/curl_interface.h"
 #endif
 
-#include "stubs/php_swoole_hook_sockets_arginfo.h"
-
 #include <unordered_map>
 
 BEGIN_EXTERN_C()
 #include "stubs/php_swoole_runtime_arginfo.h"
+
+#ifdef SW_USE_PGSQL
+extern void swoole_pgsql_set_blocking(bool blocking);
+#endif
+
+#ifdef SW_USE_ODBC
+extern void swoole_odbc_set_blocking(bool blocking);
+#endif
+
+#ifdef SW_USE_ORACLE
+extern void swoole_oracle_set_blocking(bool blocking);
+#endif
+
+#ifdef SW_USE_SQLITE
+extern void swoole_sqlite_set_blocking(bool blocking);
+#endif
 END_EXTERN_C()
 
 /* openssl */
@@ -82,16 +97,16 @@ static php_stream_ops socket_ops {
     socket_read,
     socket_close,
     socket_flush,
-    "tcp_socket/coroutine",
+    "socket/coroutine",
     nullptr, /* seek */
     socket_cast,
     socket_stat,
     socket_set_option,
 };
 
-struct php_swoole_netstream_data_t {
+struct NetStream {
     php_netstream_data_t stream;
-    Socket *socket;
+    std::shared_ptr<Socket> socket;
     bool blocking;
 };
 
@@ -116,9 +131,11 @@ static struct {
 
 static std::vector<std::string> unsafe_functions {
     "pcntl_fork",
+    "pcntl_rfork",
     "pcntl_wait",
     "pcntl_waitpid",
     "pcntl_sigtimedwait",
+    "pcntl_sigwaitinfo",
 };
 
 static const zend_function_entry swoole_runtime_methods[] = {
@@ -148,45 +165,12 @@ static zend_internal_arg_info *get_arginfo(const char *name, size_t l_name) {
 
 #define SW_HOOK_FUNC(f) hook_func(ZEND_STRL(#f), PHP_FN(swoole_##f))
 #define SW_UNHOOK_FUNC(f) unhook_func(ZEND_STRL(#f))
-#define SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(f)                                                                           \
+#define SW_HOOK_WITH_NATIVE_FUNC(f)                                                                                    \
     hook_func(ZEND_STRL(#f), PHP_FN(swoole_native_##f), get_arginfo(ZEND_STRL("swoole_native_" #f)))
+#define SW_HOOK_WITH_PHP_FUNC(f) hook_func(ZEND_STRL(#f))
 
-#define SW_HOOK_SOCKETS_FUNC(f) hook_func(ZEND_STRL(#f), nullptr, get_arginfo(ZEND_STRL("swoole_native_" #f)))
-
-#define SW_HOOK_FE(name, arg_info)                                                                                     \
-    ZEND_RAW_FENTRY("swoole_native_" #name, PHP_FN(swoole_user_func_handler), arg_info, 0)
-
-// clang-format off
-static const zend_function_entry swoole_sockets_functions[] = {
-    SW_HOOK_FE(socket_create_listen, arginfo_swoole_native_socket_create_listen)
-    SW_HOOK_FE(socket_accept, arginfo_swoole_native_socket_accept)
-    SW_HOOK_FE(socket_set_nonblock, arginfo_swoole_native_socket_set_nonblock)
-    SW_HOOK_FE(socket_set_block, arginfo_swoole_native_socket_set_block)
-    SW_HOOK_FE(socket_listen, arginfo_swoole_native_socket_listen)
-    SW_HOOK_FE(socket_close, arginfo_swoole_native_socket_close)
-    SW_HOOK_FE(socket_write, arginfo_swoole_native_socket_write)
-    SW_HOOK_FE(socket_read, arginfo_swoole_native_socket_read)
-    SW_HOOK_FE(socket_getsockname, arginfo_swoole_native_socket_getsockname)
-    SW_HOOK_FE(socket_getpeername, arginfo_swoole_native_socket_getpeername)
-    SW_HOOK_FE(socket_create, arginfo_swoole_native_socket_create)
-    SW_HOOK_FE(socket_connect, arginfo_swoole_native_socket_connect)
-    SW_HOOK_FE(socket_strerror, arginfo_swoole_native_socket_strerror)
-    SW_HOOK_FE(socket_bind, arginfo_swoole_native_socket_bind)
-    SW_HOOK_FE(socket_recv, arginfo_swoole_native_socket_recv)
-    SW_HOOK_FE(socket_send, arginfo_swoole_native_socket_send)
-    SW_HOOK_FE(socket_recvfrom, arginfo_swoole_native_socket_recvfrom)
-    SW_HOOK_FE(socket_sendto, arginfo_swoole_native_socket_sendto)
-    SW_HOOK_FE(socket_get_option, arginfo_swoole_native_socket_get_option)
-    SW_HOOK_FE(socket_set_option, arginfo_swoole_native_socket_set_option)
-    SW_HOOK_FE(socket_getopt, arginfo_swoole_native_socket_getopt)
-    SW_HOOK_FE(socket_setopt, arginfo_swoole_native_socket_setopt)
-    SW_HOOK_FE(socket_shutdown, arginfo_swoole_native_socket_shutdown)
-    SW_HOOK_FE(socket_last_error, arginfo_swoole_native_socket_last_error)
-    SW_HOOK_FE(socket_clear_error, arginfo_swoole_native_socket_clear_error)
-    SW_HOOK_FE(socket_import_stream, arginfo_swoole_native_socket_import_stream)
-    ZEND_FE_END
-};
-// clang-format on
+#define SW_HOOK_LIBRARY_FE(name, arg_info)                                                                             \
+    ZEND_RAW_FENTRY("swoole_hook_" #name, PHP_FN(swoole_user_func_handler), arg_info, 0)
 
 static zend_array *tmp_function_table = nullptr;
 static std::unordered_map<std::string, zend_class_entry *> child_class_entries;
@@ -199,9 +183,6 @@ SW_EXTERN_C_END
 void php_swoole_runtime_minit(int module_number) {
     SW_INIT_CLASS_ENTRY_BASE(swoole_runtime, "Swoole\\Runtime", nullptr, swoole_runtime_methods, nullptr);
     SW_SET_CLASS_CREATE(swoole_runtime, sw_zend_create_object_deny);
-
-    zend_unregister_functions(swoole_sockets_functions, -1, CG(function_table));
-    zend_register_functions(NULL, swoole_sockets_functions, NULL, MODULE_PERSISTENT);
 
     SW_REGISTER_LONG_CONSTANT("SWOOLE_HOOK_TCP", PHPCoroutine::HOOK_TCP);
     SW_REGISTER_LONG_CONSTANT("SWOOLE_HOOK_UDP", PHPCoroutine::HOOK_UDP);
@@ -220,6 +201,18 @@ void php_swoole_runtime_minit(int module_number) {
     SW_REGISTER_LONG_CONSTANT("SWOOLE_HOOK_NATIVE_CURL", PHPCoroutine::HOOK_NATIVE_CURL);
     SW_REGISTER_LONG_CONSTANT("SWOOLE_HOOK_BLOCKING_FUNCTION", PHPCoroutine::HOOK_BLOCKING_FUNCTION);
     SW_REGISTER_LONG_CONSTANT("SWOOLE_HOOK_SOCKETS", PHPCoroutine::HOOK_SOCKETS);
+#ifdef SW_USE_PGSQL
+    SW_REGISTER_LONG_CONSTANT("SWOOLE_HOOK_PDO_PGSQL", PHPCoroutine::HOOK_PDO_PGSQL);
+#endif
+#ifdef SW_USE_ODBC
+    SW_REGISTER_LONG_CONSTANT("SWOOLE_HOOK_PDO_ODBC", PHPCoroutine::HOOK_PDO_ODBC);
+#endif
+#ifdef SW_USE_ORACLE
+    SW_REGISTER_LONG_CONSTANT("SWOOLE_HOOK_PDO_ORACLE", PHPCoroutine::HOOK_PDO_ORACLE);
+#endif
+#ifdef SW_USE_SQLITE
+    SW_REGISTER_LONG_CONSTANT("SWOOLE_HOOK_PDO_SQLITE", PHPCoroutine::HOOK_PDO_SQLITE);
+#endif
     SW_REGISTER_LONG_CONSTANT("SWOOLE_HOOK_ALL", PHPCoroutine::HOOK_ALL);
 #ifdef SW_USE_CURL
     swoole_native_curl_minit(module_number);
@@ -307,19 +300,15 @@ static inline char *parse_ip_address_ex(const char *str, size_t str_len, int *po
 }
 
 static php_stream_size_t socket_write(php_stream *stream, const char *buf, size_t count) {
-    php_swoole_netstream_data_t *abstract;
-    Socket *sock;
+    NetStream *abstract;
     ssize_t didwrite = -1;
+    std::shared_ptr<Socket> sock;
 
-    abstract = (php_swoole_netstream_data_t *) stream->abstract;
-    if (UNEXPECTED(!abstract)) {
+    abstract = (NetStream *) stream->abstract;
+    if (UNEXPECTED(!abstract || !abstract->socket)) {
         goto _exit;
     }
-
-    sock = (Socket *) abstract->socket;
-    if (UNEXPECTED(!sock)) {
-        goto _exit;
-    }
+    sock = abstract->socket;
 
     if (abstract->blocking) {
         didwrite = sock->send_all(buf, count);
@@ -358,19 +347,15 @@ _exit:
 }
 
 static php_stream_size_t socket_read(php_stream *stream, char *buf, size_t count) {
-    php_swoole_netstream_data_t *abstract;
-    Socket *sock;
+    std::shared_ptr<Socket> sock;
+    NetStream *abstract;
     ssize_t nr_bytes = -1;
 
-    abstract = (php_swoole_netstream_data_t *) stream->abstract;
-    if (UNEXPECTED(!abstract)) {
+    abstract = (NetStream *) stream->abstract;
+    if (UNEXPECTED(!abstract || !abstract->socket)) {
         goto _exit;
     }
-
-    sock = (Socket *) abstract->socket;
-    if (UNEXPECTED(!sock)) {
-        goto _exit;
-    }
+    sock = abstract->socket;
 
     if (abstract->blocking) {
         nr_bytes = sock->recv(buf, count);
@@ -402,24 +387,21 @@ static int socket_flush(php_stream *stream) {
 }
 
 static int socket_close(php_stream *stream, int close_handle) {
-    php_swoole_netstream_data_t *abstract = (php_swoole_netstream_data_t *) stream->abstract;
+    NetStream *abstract = (NetStream *) stream->abstract;
     if (UNEXPECTED(!abstract)) {
         return FAILURE;
     }
     /** set it null immediately */
     stream->abstract = nullptr;
-    Socket *sock = (Socket *) abstract->socket;
-    if (UNEXPECTED(!sock)) {
-        return FAILURE;
-    }
     /**
      * it's always successful (even if the destructor rule is violated)
      * every calls passes through the hook function in PHP
      * so there is unnecessary to worry about the null pointer.
      */
-    sock->close();
-    delete sock;
-    pefree(abstract, php_stream_is_persistent(stream));
+    if (abstract->socket) {
+        abstract->socket->close();
+    }
+    delete abstract;
     return SUCCESS;
 }
 
@@ -439,15 +421,11 @@ enum {
 enum { STREAM_XPORT_CRYPTO_OP_SETUP, STREAM_XPORT_CRYPTO_OP_ENABLE };
 
 static int socket_cast(php_stream *stream, int castas, void **ret) {
-    php_swoole_netstream_data_t *abstract = (php_swoole_netstream_data_t *) stream->abstract;
-    if (UNEXPECTED(!abstract)) {
+    NetStream *abstract = (NetStream *) stream->abstract;
+    if (UNEXPECTED(!abstract || !abstract->socket)) {
         return FAILURE;
     }
-    Socket *sock = (Socket *) abstract->socket;
-    if (UNEXPECTED(!sock)) {
-        return FAILURE;
-    }
-
+    std::shared_ptr<Socket> sock = abstract->socket;
     switch (castas) {
     case PHP_STREAM_AS_STDIO:
         if (ret) {
@@ -469,15 +447,14 @@ static int socket_cast(php_stream *stream, int castas, void **ret) {
 }
 
 static int socket_stat(php_stream *stream, php_stream_statbuf *ssb) {
-    php_swoole_netstream_data_t *abstract = (php_swoole_netstream_data_t *) stream->abstract;
+    NetStream *abstract = (NetStream *) stream->abstract;
     if (UNEXPECTED(!abstract)) {
         return FAILURE;
     }
-    Socket *sock = (Socket *) abstract->socket;
-    if (UNEXPECTED(!sock)) {
+    if (UNEXPECTED(!abstract->socket)) {
         return FAILURE;
     }
-    return zend_fstat(sock->get_fd(), &ssb->sb);
+    return zend_fstat(abstract->socket->get_fd(), &ssb->sb);
 }
 
 static inline int socket_connect(php_stream *stream, Socket *sock, php_stream_xport_param *xparam) {
@@ -596,14 +573,13 @@ static inline int socket_accept(php_stream *stream, Socket *sock, php_stream_xpo
         sock->set_timeout(timeout, Socket::TIMEOUT_READ);
     }
 
-    Socket *clisock = sock->accept();
+    std::shared_ptr<Socket> clisock(sock->accept());
 
 #ifdef SW_USE_OPENSSL
     if (clisock != nullptr && clisock->ssl_is_enable()) {
         if (!clisock->ssl_handshake()) {
             sock->errCode = clisock->errCode;
-            delete clisock;
-            clisock = nullptr;
+            clisock.reset();
         }
     }
 #endif
@@ -624,9 +600,7 @@ static inline int socket_accept(php_stream *stream, Socket *sock, php_stream_xpo
             clisock->get_socket()->set_tcp_nodelay(tcp_nodelay);
         }
 #endif
-        php_swoole_netstream_data_t *abstract = (php_swoole_netstream_data_t *) emalloc(sizeof(*abstract));
-        memset(abstract, 0, sizeof(*abstract));
-
+        auto abstract = new NetStream();
         abstract->socket = clisock;
         abstract->blocking = true;
 
@@ -637,7 +611,7 @@ static inline int socket_accept(php_stream *stream, Socket *sock, php_stream_xpo
                 GC_ADDREF(stream->ctx);
             }
         }
-        return 0;
+        return SUCCESS;
     }
 }
 
@@ -746,7 +720,7 @@ static bool php_openssl_capture_peer_certs(php_stream *stream, Socket *sslsock) 
 
     zval argv[1];
     ZVAL_STRINGL(&argv[0], peer_cert.c_str(), peer_cert.length());
-    zend::function::ReturnValue retval = zend::function::call("openssl_x509_read", 1, argv);
+    auto retval = zend::function::call("openssl_x509_read", 1, argv);
     php_stream_context_set_option(PHP_STREAM_CONTEXT(stream), "ssl", "peer_certificate", &retval.value);
     zval_dtor(&argv[0]);
 
@@ -760,7 +734,7 @@ static bool php_openssl_capture_peer_certs(php_stream *stream, Socket *sslsock) 
             for (auto &cert : chain) {
                 zval argv[1];
                 ZVAL_STRINGL(&argv[0], cert.c_str(), cert.length());
-                zend::function::ReturnValue retval = zend::function::call("openssl_x509_read", 1, argv);
+                auto retval = zend::function::call("openssl_x509_read", 1, argv);
                 zval_add_ref(&retval.value);
                 add_next_index_zval(&arr, &retval.value);
                 zval_dtor(&argv[0]);
@@ -921,11 +895,12 @@ static inline int socket_xport_api(php_stream *stream, Socket *sock, php_stream_
 }
 
 static int socket_set_option(php_stream *stream, int option, int value, void *ptrparam) {
-    php_swoole_netstream_data_t *abstract = (php_swoole_netstream_data_t *) stream->abstract;
+    NetStream *abstract = (NetStream *) stream->abstract;
     if (UNEXPECTED(!abstract || !abstract->socket)) {
         return PHP_STREAM_OPTION_RETURN_ERR;
     }
-    Socket *sock = (Socket *) abstract->socket;
+    std::shared_ptr<Socket> sock_wrapped = abstract->socket;
+    auto sock = sock_wrapped.get();
     switch (option) {
     case PHP_STREAM_OPTION_BLOCKING:
         if (abstract->blocking == (bool) value) {
@@ -1040,8 +1015,7 @@ static bool socket_ssl_set_options(Socket *sock, php_stream_context *context) {
             auto add_alias = [&zalias, options](const char *name, const char *alias) {
                 zval *ztmp;
                 if (php_swoole_array_get_value_ex(options, name, ztmp)) {
-                    add_assoc_zval_ex(&zalias, alias, strlen(alias), ztmp);
-                    zval_add_ref(ztmp);
+                    zend::array_set(&zalias, alias, strlen(alias), ztmp);
                 }
             };
 
@@ -1078,8 +1052,7 @@ static php_stream *socket_create(const char *proto,
                                  struct timeval *timeout,
                                  php_stream_context *context STREAMS_DC) {
     php_stream *stream = nullptr;
-    php_swoole_netstream_data_t *abstract = nullptr;
-    Socket *sock;
+    Socket *sock = nullptr;
 
     Coroutine::get_current_safe();
 
@@ -1118,8 +1091,8 @@ static php_stream *socket_create(const char *proto,
 
     sock->set_zero_copy(true);
 
-    abstract = (php_swoole_netstream_data_t *) pemalloc(sizeof(*abstract), persistent_id ? 1 : 0);
-    abstract->socket = sock;
+    auto abstract = new NetStream();
+    abstract->socket.reset(sock);
     abstract->stream.socket = sock->get_fd();
     abstract->blocking = true;
 
@@ -1291,6 +1264,50 @@ bool PHPCoroutine::enable_hook(uint32_t flags) {
             }
         }
     }
+#ifdef SW_USE_PGSQL
+    if (flags & PHPCoroutine::HOOK_PDO_PGSQL) {
+        if (!(runtime_hook_flags & PHPCoroutine::HOOK_PDO_PGSQL)) {
+            swoole_pgsql_set_blocking(0);
+        }
+    } else {
+        if (runtime_hook_flags & PHPCoroutine::HOOK_PDO_PGSQL) {
+            swoole_pgsql_set_blocking(1);
+        }
+    }
+#endif
+#ifdef SW_USE_ODBC
+    if (flags & PHPCoroutine::HOOK_PDO_ODBC) {
+        if (!(runtime_hook_flags & PHPCoroutine::HOOK_PDO_ODBC)) {
+            swoole_odbc_set_blocking(0);
+        }
+    } else {
+        if (runtime_hook_flags & PHPCoroutine::HOOK_PDO_ODBC) {
+            swoole_odbc_set_blocking(1);
+        }
+    }
+#endif
+#ifdef SW_USE_ORACLE
+    if (flags & PHPCoroutine::HOOK_PDO_ORACLE) {
+        if (!(runtime_hook_flags & PHPCoroutine::HOOK_PDO_ORACLE)) {
+            swoole_oracle_set_blocking(0);
+        }
+    } else {
+        if (runtime_hook_flags & PHPCoroutine::HOOK_PDO_ORACLE) {
+            swoole_oracle_set_blocking(1);
+        }
+    }
+#endif
+#ifdef SW_USE_SQLITE
+    if (flags & PHPCoroutine::HOOK_PDO_SQLITE) {
+        if (!(runtime_hook_flags & PHPCoroutine::HOOK_PDO_SQLITE)) {
+            swoole_sqlite_set_blocking(0);
+        }
+    } else {
+        if (runtime_hook_flags & PHPCoroutine::HOOK_PDO_SQLITE) {
+            swoole_sqlite_set_blocking(1);
+        }
+    }
+#endif
     if (flags & PHPCoroutine::HOOK_STREAM_FUNCTION) {
         if (!(runtime_hook_flags & PHPCoroutine::HOOK_STREAM_FUNCTION)) {
             SW_HOOK_FUNC(stream_select);
@@ -1370,32 +1387,32 @@ bool PHPCoroutine::enable_hook(uint32_t flags) {
     }
     if (flags & PHPCoroutine::HOOK_SOCKETS) {
         if (!(runtime_hook_flags & PHPCoroutine::HOOK_SOCKETS)) {
-            SW_HOOK_SOCKETS_FUNC(socket_create);
-            SW_HOOK_SOCKETS_FUNC(socket_create_listen);
-            SW_HOOK_SOCKETS_FUNC(socket_create_pair);
-            SW_HOOK_SOCKETS_FUNC(socket_connect);
-            SW_HOOK_SOCKETS_FUNC(socket_write);
-            SW_HOOK_SOCKETS_FUNC(socket_read);
-            SW_HOOK_SOCKETS_FUNC(socket_send);
-            SW_HOOK_SOCKETS_FUNC(socket_recv);
-            SW_HOOK_SOCKETS_FUNC(socket_sendto);
-            SW_HOOK_SOCKETS_FUNC(socket_recvfrom);
-            SW_HOOK_SOCKETS_FUNC(socket_bind);
-            SW_HOOK_SOCKETS_FUNC(socket_listen);
-            SW_HOOK_SOCKETS_FUNC(socket_accept);
-            SW_HOOK_SOCKETS_FUNC(socket_getpeername);
-            SW_HOOK_SOCKETS_FUNC(socket_getsockname);
-            SW_HOOK_SOCKETS_FUNC(socket_getopt);
-            SW_HOOK_SOCKETS_FUNC(socket_get_option);
-            SW_HOOK_SOCKETS_FUNC(socket_setopt);
-            SW_HOOK_SOCKETS_FUNC(socket_set_option);
-            SW_HOOK_SOCKETS_FUNC(socket_set_block);
-            SW_HOOK_SOCKETS_FUNC(socket_set_nonblock);
-            SW_HOOK_SOCKETS_FUNC(socket_shutdown);
-            SW_HOOK_SOCKETS_FUNC(socket_close);
-            SW_HOOK_SOCKETS_FUNC(socket_clear_error);
-            SW_HOOK_SOCKETS_FUNC(socket_last_error);
-            SW_HOOK_SOCKETS_FUNC(socket_import_stream);
+            SW_HOOK_WITH_PHP_FUNC(socket_create);
+            SW_HOOK_WITH_PHP_FUNC(socket_create_listen);
+            SW_HOOK_WITH_PHP_FUNC(socket_create_pair);
+            SW_HOOK_WITH_PHP_FUNC(socket_connect);
+            SW_HOOK_WITH_PHP_FUNC(socket_write);
+            SW_HOOK_WITH_PHP_FUNC(socket_read);
+            SW_HOOK_WITH_PHP_FUNC(socket_send);
+            SW_HOOK_WITH_PHP_FUNC(socket_recv);
+            SW_HOOK_WITH_PHP_FUNC(socket_sendto);
+            SW_HOOK_WITH_PHP_FUNC(socket_recvfrom);
+            SW_HOOK_WITH_PHP_FUNC(socket_bind);
+            SW_HOOK_WITH_PHP_FUNC(socket_listen);
+            SW_HOOK_WITH_PHP_FUNC(socket_accept);
+            SW_HOOK_WITH_PHP_FUNC(socket_getpeername);
+            SW_HOOK_WITH_PHP_FUNC(socket_getsockname);
+            SW_HOOK_WITH_PHP_FUNC(socket_getopt);
+            SW_HOOK_WITH_PHP_FUNC(socket_get_option);
+            SW_HOOK_WITH_PHP_FUNC(socket_setopt);
+            SW_HOOK_WITH_PHP_FUNC(socket_set_option);
+            SW_HOOK_WITH_PHP_FUNC(socket_set_block);
+            SW_HOOK_WITH_PHP_FUNC(socket_set_nonblock);
+            SW_HOOK_WITH_PHP_FUNC(socket_shutdown);
+            SW_HOOK_WITH_PHP_FUNC(socket_close);
+            SW_HOOK_WITH_PHP_FUNC(socket_clear_error);
+            SW_HOOK_WITH_PHP_FUNC(socket_last_error);
+            SW_HOOK_WITH_PHP_FUNC(socket_import_stream);
 
             inherit_class(ZEND_STRL("Swoole\\Coroutine\\Socket"), ZEND_STRL("Socket"));
         }
@@ -1439,30 +1456,30 @@ bool PHPCoroutine::enable_hook(uint32_t flags) {
             flags ^= PHPCoroutine::HOOK_CURL;
         }
         if (!(runtime_hook_flags & PHPCoroutine::HOOK_NATIVE_CURL)) {
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_close);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_copy_handle);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_errno);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_error);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_exec);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_getinfo);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_init);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_setopt);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_setopt_array);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_reset);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_pause);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_escape);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_unescape);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_close);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_copy_handle);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_errno);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_error);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_exec);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_getinfo);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_init);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_setopt);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_setopt_array);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_reset);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_pause);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_escape);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_unescape);
 
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_multi_init);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_multi_add_handle);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_multi_exec);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_multi_errno);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_multi_select);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_multi_setopt);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_multi_getcontent);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_multi_info_read);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_multi_remove_handle);
-            SW_HOOK_NATIVE_FUNC_WITH_ARG_INFO(curl_multi_close);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_multi_init);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_multi_add_handle);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_multi_exec);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_multi_errno);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_multi_select);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_multi_setopt);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_multi_getcontent);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_multi_info_read);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_multi_remove_handle);
+            SW_HOOK_WITH_NATIVE_FUNC(curl_multi_close);
         }
     } else {
         if (runtime_hook_flags & PHPCoroutine::HOOK_NATIVE_CURL) {
@@ -1496,16 +1513,18 @@ bool PHPCoroutine::enable_hook(uint32_t flags) {
 
     if (flags & PHPCoroutine::HOOK_CURL) {
         if (!(runtime_hook_flags & PHPCoroutine::HOOK_CURL)) {
-            hook_func(ZEND_STRL("curl_init"));
-            hook_func(ZEND_STRL("curl_setopt"));
-            hook_func(ZEND_STRL("curl_setopt_array"));
-            hook_func(ZEND_STRL("curl_exec"));
-            hook_func(ZEND_STRL("curl_getinfo"));
-            hook_func(ZEND_STRL("curl_errno"));
-            hook_func(ZEND_STRL("curl_error"));
-            hook_func(ZEND_STRL("curl_reset"));
-            hook_func(ZEND_STRL("curl_close"));
-            hook_func(ZEND_STRL("curl_multi_getcontent"));
+            SW_HOOK_WITH_PHP_FUNC(curl_init);
+            SW_HOOK_WITH_PHP_FUNC(curl_setopt);
+            SW_HOOK_WITH_PHP_FUNC(curl_setopt_array);
+            SW_HOOK_WITH_PHP_FUNC(curl_exec);
+            SW_HOOK_WITH_PHP_FUNC(curl_getinfo);
+            SW_HOOK_WITH_PHP_FUNC(curl_errno);
+            SW_HOOK_WITH_PHP_FUNC(curl_error);
+            SW_HOOK_WITH_PHP_FUNC(curl_reset);
+            SW_HOOK_WITH_PHP_FUNC(curl_close);
+            SW_HOOK_WITH_PHP_FUNC(curl_multi_getcontent);
+
+            inherit_class(ZEND_STRL("Swoole\\Curl\\Handler"), ZEND_STRL("CurlHandle"));
         }
     } else {
         if (runtime_hook_flags & PHPCoroutine::HOOK_CURL) {
@@ -1519,6 +1538,8 @@ bool PHPCoroutine::enable_hook(uint32_t flags) {
             SW_UNHOOK_FUNC(curl_reset);
             SW_UNHOOK_FUNC(curl_close);
             SW_UNHOOK_FUNC(curl_multi_getcontent);
+
+            detach_parent_class("Swoole\\Curl\\Handler");
         }
     }
 
@@ -1949,23 +1970,19 @@ static void unhook_func(const char *name, size_t l_name) {
 }
 
 php_stream *php_swoole_create_stream_from_socket(php_socket_t _fd, int domain, int type, int protocol STREAMS_DC) {
-    Socket *sock = new Socket(_fd, domain, type, protocol);
-
+    auto *abstract = new NetStream();
+    abstract->socket = std::make_shared<Socket>(_fd, domain, type, protocol);
     if (FG(default_socket_timeout) > 0) {
-        sock->set_timeout((double) FG(default_socket_timeout));
+        abstract->socket->set_timeout((double) FG(default_socket_timeout));
     }
-
-    php_swoole_netstream_data_t *abstract = (php_swoole_netstream_data_t *) ecalloc(1, sizeof(*abstract));
-
-    abstract->socket = sock;
     abstract->stream.timeout.tv_sec = FG(default_socket_timeout);
-    abstract->stream.socket = sock->get_fd();
+    abstract->stream.socket = abstract->socket->get_fd();
     abstract->blocking = true;
 
     php_stream *stream = php_stream_alloc_rel(&socket_ops, abstract, nullptr, "r+");
 
     if (stream == nullptr) {
-        delete sock;
+        delete abstract;
     } else {
         stream->flags |= PHP_STREAM_FLAG_AVOID_BLOCKING;
     }

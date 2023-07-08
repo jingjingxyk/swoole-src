@@ -7,10 +7,11 @@ on:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[test]')"
     strategy:
       fail-fast: false
       matrix:
-        php-version: [ '8.0', '8.1' ]
+        php-version: [ '8.0', '8.1', '8.2' ]
         framework: [ 'Laravel Octane', 'Hyperf', 'Simps', 'imi' ]
     name: ${{ matrix.framework }} - PHP ${{ matrix.php-version }}
     steps:
@@ -28,7 +29,7 @@ jobs:
 
       - name: Build Swoole
         run: |
-          sudo apt update -y && sudo apt install -y libcurl4-openssl-dev php-curl libc-ares-dev libpq-dev
+          sudo apt update -y && sudo apt install -y libcurl4-openssl-dev php-curl libc-ares-dev libpq-dev valgrind
           phpize
           ./configure --enable-openssl --enable-mysqlnd --enable-swoole-curl --enable-cares --enable-swoole-pgsql
           make -j$(nproc)
@@ -39,13 +40,12 @@ jobs:
           php --ri swoole
 
       - name: Laravel Octane Tests
-        if: matrix.framework == 'Laravel Octane'
+        if: matrix.framework == 'Laravel Octane' &&  matrix.php-version != '8.0'
         run: |
           git clone https://github.com/laravel/octane.git --depth=1
           cd octane/
-          composer require laravel/framework:"^8.35" --no-update
           composer update --prefer-dist --no-interaction --no-progress
-          vendor/bin/phpunit --verbose
+          vendor/bin/phpunit -v
 
       - name: Hyperf Tests
         if: matrix.framework == 'Hyperf'
@@ -62,7 +62,14 @@ jobs:
           export TRAVIS_BUILD_DIR=$(pwd) && bash ./.travis/setup.mysql.sh
           export TRAVIS_BUILD_DIR=$(pwd) && bash ./.travis/setup.pgsql.sh
           cp .travis/.env.example .env
-          ./.travis/run.test.sh
+          export SWOOLE_BRANCH=${GITHUB_REF##*/}
+          if [ "${SWOOLE_BRANCH}" = "valgrind" ]; then
+            USE_ZEND_ALLOC=0 valgrind php -dswoole.use_shortname='Off' bin/co-phpunit --exclude-group NonCoroutine
+            USE_ZEND_ALLOC=0 valgrind php -dswoole.use_shortname='Off' vendor/bin/phpunit --group NonCoroutine
+            USE_ZEND_ALLOC=0 valgrind php -dswoole.use_shortname='Off' vendor/bin/phpunit src/filesystem --group NonCoroutine
+          else
+            .travis/run.test.sh
+          fi
 
       - name: Simps Tests
         if: matrix.framework == 'Simps'
@@ -90,11 +97,12 @@ jobs:
           composer test-swoole
 
   macos:
+    if: "!contains(github.event.head_commit.message, '[test]')"
     runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
-        php-version: [ '8.0', '8.1' ]
+        php-version: [ '8.0', '8.1', '8.2' ]
         framework: [ 'Simps' ]
     name: ${{ matrix.framework }} - PHP ${{ matrix.php-version }} - macOS
     steps:

@@ -231,6 +231,9 @@ void php_swoole_process_minit(int module_number) {
         REGISTER_LONG_CONSTANT("PRIO_PGRP", (zend_long) PRIO_PGRP, CONST_CS | CONST_PERSISTENT);
         REGISTER_LONG_CONSTANT("PRIO_USER", (zend_long) PRIO_USER, CONST_CS | CONST_PERSISTENT);
     }
+
+    SW_REGISTER_LONG_CONSTANT("SWOOLE_MSGQUEUE_ORIENT", SW_MSGQUEUE_ORIENT);
+    SW_REGISTER_LONG_CONSTANT("SWOOLE_MSGQUEUE_BALANCE", SW_MSGQUEUE_BALANCE);
 }
 
 static PHP_METHOD(swoole_process, __construct) {
@@ -341,7 +344,7 @@ static PHP_METHOD(swoole_process, wait) {
 
 static PHP_METHOD(swoole_process, useQueue) {
     long msgkey = 0;
-    long mode = 2;
+    long mode = SW_MSGQUEUE_BALANCE;
     long capacity = -1;
 
     if (zend_parse_parameters(ZEND_NUM_ARGS(), "|lll", &msgkey, &mode, &capacity) == FAILURE) {
@@ -367,7 +370,7 @@ static PHP_METHOD(swoole_process, useQueue) {
         queue->set_capacity(capacity);
     }
     process->queue = queue;
-    process->ipc_mode = mode;
+    process->msgqueue_mode = mode;
     zend_update_property_long(swoole_process_ce, SW_Z8_OBJ_P(ZEND_THIS), ZEND_STRL("msgQueueId"), queue->get_id());
     zend_update_property_long(swoole_process_ce, SW_Z8_OBJ_P(ZEND_THIS), ZEND_STRL("msgQueueKey"), msgkey);
     RETURN_TRUE;
@@ -451,7 +454,11 @@ static PHP_METHOD(swoole_process, signal) {
     if (zcallback == nullptr) {
         fci_cache = signal_fci_caches[signo];
         if (fci_cache) {
+#ifdef SW_USE_THREAD_CONTEXT
+            swoole_event_defer([signo](void *) { swoole_signal_set(signo, nullptr); }, nullptr);
+#else
             swoole_signal_set(signo, nullptr);
+#endif
             signal_fci_caches[signo] = nullptr;
             swoole_event_defer(sw_zend_fci_cache_free, fci_cache);
             SwooleTG.signal_listener_num--;
@@ -483,7 +490,11 @@ static PHP_METHOD(swoole_process, signal) {
             SwooleTG.signal_listener_num++;
         }
         signal_fci_caches[signo] = fci_cache;
+#ifdef SW_USE_THREAD_CONTEXT
+        swoole_event_defer([signo, handler](void *) { swoole_signal_set(signo, handler); }, nullptr);
+#else
         swoole_signal_set(signo, handler);
+#endif
         RETURN_TRUE;
     }
 
@@ -503,7 +514,11 @@ static PHP_METHOD(swoole_process, signal) {
     }
     signal_fci_caches[signo] = fci_cache;
 
+#ifdef SW_USE_THREAD_CONTEXT
+    swoole_event_defer([signo, handler](void *) { swoole_signal_set(signo, handler); }, nullptr);
+#else
     swoole_signal_set(signo, handler);
+#endif
 
     RETURN_TRUE;
 }
@@ -829,7 +844,7 @@ static PHP_METHOD(swoole_process, pop) {
         char data[SW_MSGMAX];
     } message;
 
-    if (process->ipc_mode == 2) {
+    if (process->msgqueue_mode == SW_MSGQUEUE_BALANCE) {
         message.type = 0;
     } else {
         message.type = process->id + 1;
@@ -967,6 +982,10 @@ static PHP_METHOD(swoole_process, exit) {
         ret_code = 1;
     }
 
+    if (swoole_event_is_available()) {
+        swoole_event_free();
+    }
+
     exit(ret_code);
 }
 
@@ -1058,23 +1077,55 @@ static PHP_METHOD(swoole_process, setBlocking) {
     }
 }
 
+#define SW_CHECK_PRIORITY_WHO()                                                                                        \
+    if (who_is_null) {                                                                                                 \
+        if (which == PRIO_PROCESS) {                                                                                   \
+            Worker *process = php_swoole_process_get_and_check_worker(ZEND_THIS);                                      \
+            who = process->pid;                                                                                        \
+        } else {                                                                                                       \
+            php_swoole_fatal_error(E_WARNING, "$who parameter must not be null");                                      \
+            swoole_set_last_error(SW_ERROR_INVALID_PARAMS);                                                            \
+            RETURN_FALSE;                                                                                              \
+        }                                                                                                              \
+    }
+
 static PHP_METHOD(swoole_process, setPriority) {
-    zend_long which, priority;
-    ZEND_PARSE_PARAMETERS_START(2, 2)
+    zend_long which, priority, who;
+    bool who_is_null = 1;
+
+    ZEND_PARSE_PARAMETERS_START(2, 3)
     Z_PARAM_LONG(which)
     Z_PARAM_LONG(priority)
+    Z_PARAM_OPTIONAL
+    Z_PARAM_LONG_OR_NULL(who, who_is_null)
     ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE);
 
-    Worker *process = php_swoole_process_get_and_check_worker(ZEND_THIS);
-    RETURN_BOOL(setpriority(which, process->pid, priority) == 0);
+    SW_CHECK_PRIORITY_WHO();
+    if (setpriority(which, who, priority) < 0) {
+        swoole_set_last_error(errno);
+        RETURN_FALSE;
+    } else {
+        RETURN_TRUE;
+    }
 }
 
 static PHP_METHOD(swoole_process, getPriority) {
-    zend_long which;
-    ZEND_PARSE_PARAMETERS_START(1, 1)
+    zend_long which, who;
+    bool who_is_null = 1;
+
+    ZEND_PARSE_PARAMETERS_START(1, 2)
     Z_PARAM_LONG(which)
+    Z_PARAM_OPTIONAL
+    Z_PARAM_LONG_OR_NULL(who, who_is_null)
     ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE);
 
-    Worker *process = php_swoole_process_get_and_check_worker(ZEND_THIS);
-    RETURN_LONG(getpriority(which, process->pid));
+    SW_CHECK_PRIORITY_WHO();
+    errno = 0;
+    int priority = getpriority(which, who);
+    if (priority == -1 && errno != 0) {
+        swoole_set_last_error(errno);
+        RETURN_FALSE;
+    } else {
+        RETURN_LONG(priority);
+    }
 }

@@ -34,7 +34,7 @@
 #define SW_ZLIB_ENCODING_ANY 0x2f
 #endif
 
-#include "thirdparty/nghttp2/nghttp2.h"
+#include <nghttp2/nghttp2.h>
 
 enum swHttpHeaderFlag {
     HTTP_HEADER_SERVER = 1u << 1,
@@ -44,6 +44,7 @@ enum swHttpHeaderFlag {
     HTTP_HEADER_CONTENT_TYPE = 1u << 5,
     HTTP_HEADER_TRANSFER_ENCODING = 1u << 6,
     HTTP_HEADER_ACCEPT_ENCODING = 1u << 7,
+    HTTP_HEADER_CONTENT_ENCODING = 1u << 8,
 };
 
 enum swHttpCompressMethod {
@@ -140,7 +141,7 @@ struct Context {
     uchar http2 : 1;
 
     http2::Stream *stream;
-    std::shared_ptr<String> write_buffer;
+    String *write_buffer;
 
 #ifdef SW_HAVE_COMPRESSION
     int8_t compression_level;
@@ -245,6 +246,10 @@ class Session {
 
     http2::Settings local_settings = {};
     http2::Settings remote_settings = {};
+
+    // flow control
+    uint32_t remote_window_size;
+    uint32_t local_window_size;
 
     uint32_t last_stream_id;
     bool shutting_down;

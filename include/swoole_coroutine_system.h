@@ -39,6 +39,9 @@ struct PollSocket {
     }
 };
 
+int translate_events_to_poll(int events);
+int translate_events_from_poll(int events);
+
 class System {
   public:
     static void init_reactor(Reactor *reactor);
@@ -69,6 +72,16 @@ class System {
     static int wait_event(int fd, int events, double timeout);
 };
 std::string gethostbyname_impl_with_async(const std::string &hostname, int domain, double timeout = -1);
+//-------------------------------------------------------------------------------
+struct AsyncLock {
+ private:
+    void *resource_;
+ public:
+    AsyncLock(void *resource);
+    ~AsyncLock();
+};
+
+std::shared_ptr<AsyncLock> async_lock(void *);
 //-------------------------------------------------------------------------------
 }  // namespace coroutine
 }  // namespace swoole

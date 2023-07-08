@@ -31,7 +31,7 @@ const char *swoole_strerror(int code) {
         return strerror(code);
     }
     /* swstrerror {{{*/
-    switch(code) {
+    switch (code) {
     case SW_ERROR_MALLOC_FAIL:
         return "Malloc fail";
     case SW_ERROR_SYSTEM_CALL_FAIL:
@@ -50,6 +50,8 @@ const char *swoole_strerror(int code) {
         return "Protocol error";
     case SW_ERROR_WRONG_OPERATION:
         return "Wrong operation";
+    case SW_ERROR_PHP_RUNTIME_NOTICE:
+        return "PHP runtime notice";
     case SW_ERROR_FILE_NOT_EXIST:
         return "File not exist";
     case SW_ERROR_FILE_TOO_LARGE:
@@ -162,6 +164,8 @@ const char *swoole_strerror(int code) {
         return "Http proxy handshake failed";
     case SW_ERROR_HTTP_PROXY_BAD_RESPONSE:
         return "Http proxy bad response";
+    case SW_ERROR_HTTP_CONFLICT_HEADER:
+        return "Http conflict header";
     case SW_ERROR_WEBSOCKET_BAD_CLIENT:
         return "Websocket bad client";
     case SW_ERROR_WEBSOCKET_BAD_OPCODE:
@@ -246,6 +250,8 @@ const char *swoole_strerror(int code) {
         return "Coroutine canceled";
     case SW_ERROR_CO_TIMEDOUT:
         return "Coroutine timedout";
+    case SW_ERROR_CO_SOCKET_CLOSE_WAIT:
+        return "Coroutine socket close wait";
     default:
         static char buffer[32];
 #ifndef __MACH__

@@ -79,6 +79,7 @@ int swoole_coroutine_closedir(DIR *dirp);
  */
 int swoole_coroutine_socket(int domain, int type, int protocol);
 int swoole_coroutine_socket_create(int fd);
+int swoole_coroutine_socket_unwrap(int fd);
 uint8_t swoole_coroutine_socket_exists(int fd);
 ssize_t swoole_coroutine_send(int sockfd, const void *buf, size_t len, int flags);
 ssize_t swoole_coroutine_sendmsg(int sockfd, const struct msghdr *msg, int flags);
@@ -87,6 +88,7 @@ ssize_t swoole_coroutine_recvmsg(int sockfd, struct msghdr *msg, int flags);
 int swoole_coroutine_close(int fd);
 int swoole_coroutine_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 int swoole_coroutine_poll(struct pollfd *fds, nfds_t nfds, int timeout);
+int swoole_coroutine_poll_fake(struct pollfd *fds, nfds_t nfds, int timeout);
 int swoole_coroutine_socket_set_timeout(int fd, int which, double timeout);
 int swoole_coroutine_socket_set_connect_timeout(int fd, double timeout);
 int swoole_coroutine_socket_wait_event(int fd, int event, double timeout);

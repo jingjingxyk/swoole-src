@@ -254,7 +254,7 @@ int php_swoole_websocket_frame_object_pack_ex(String *buffer, zval *zdata, zend_
 
 void swoole_websocket_onBeforeHandshakeResponse(Server *serv, int server_fd, HttpContext *ctx) {
     zend_fcall_info_cache *fci_cache =
-        php_swoole_server_get_fci_cache(serv, server_fd, SW_SERVER_CB_onBeforeHandShakeResponse);
+        php_swoole_server_get_fci_cache(serv, server_fd, SW_SERVER_CB_onBeforeHandshakeResponse);
     if (fci_cache) {
         zval args[3];
         args[0] = *((zval *) serv->private_data_2);
@@ -271,7 +271,7 @@ void swoole_websocket_onBeforeHandshakeResponse(Server *serv, int server_fd, Htt
 void swoole_websocket_onOpen(Server *serv, HttpContext *ctx) {
     Connection *conn = serv->get_connection_by_session_id(ctx->fd);
     if (!conn) {
-        swoole_error_log(SW_LOG_NOTICE, SW_ERROR_SESSION_CLOSED, "session[%ld] is closed", ctx->fd);
+        swoole_error_log(SW_LOG_TRACE, SW_ERROR_SESSION_NOT_EXIST, "session[%ld] is closed", ctx->fd);
         return;
     }
     zend_fcall_info_cache *fci_cache = php_swoole_server_get_fci_cache(serv, conn->server_fd, SW_SERVER_CB_onOpen);
@@ -351,7 +351,7 @@ bool swoole_websocket_handshake(HttpContext *ctx) {
         serv = (Server *) ctx->private_data;
         conn = serv->get_connection_by_session_id(ctx->fd);
         if (!conn) {
-            swoole_error_log(SW_LOG_NOTICE, SW_ERROR_SESSION_CLOSED, "session[%ld] is closed", ctx->fd);
+            swoole_error_log(SW_LOG_TRACE, SW_ERROR_SESSION_NOT_EXIST, "session[%ld] is closed", ctx->fd);
             return false;
         }
     }
@@ -711,6 +711,7 @@ static sw_inline bool swoole_websocket_server_push(Server *serv, SessionId fd, S
         ZVAL_FALSE(return_value);
         php_swoole_server_send_yield(serv, fd, &_yield_data, return_value);
         ret = Z_BVAL_P(return_value);
+        zval_ptr_dtor(&_yield_data);
     }
     return ret;
 }

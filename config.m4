@@ -71,6 +71,11 @@ PHP_ARG_WITH([brotli_dir],
   [AS_HELP_STRING([[--with-brotli-dir[=DIR]]],
     [Include Brotli support])], [no], [no])
 
+PHP_ARG_WITH([nghttp2_dir],
+  [dir of nghttp2],
+  [AS_HELP_STRING([[--with-nghttp2-dir[=DIR]]],
+    [Include nghttp2 support])], [no], [no])
+
 PHP_ARG_WITH([jemalloc_dir],
   [dir of jemalloc],
   [AS_HELP_STRING([[--with-jemalloc-dir[=DIR]]],
@@ -110,6 +115,31 @@ PHP_ARG_ENABLE([swoole-coro-time],
   [whether to enable coroutine execution time ],
   [AS_HELP_STRING([--enable-swoole-coro-time],
     [Calculating coroutine execution time])], [no], [no])
+
+define([PDO_ODBC_HELP_TEXT],[[
+  The include and lib dirs are looked for under 'dir'. The 'flavour' can be one
+  of: ibm-db2, iODBC, unixODBC, generic. If ',dir' part is omitted, default for
+  the flavour you have selected will be used. e.g.: --with-swoole-odbc=unixODBC
+  will check for unixODBC under /usr/local. You may attempt to use an otherwise
+  unsupported driver using the 'generic' flavour. The syntax for generic ODBC
+  support is: --with-swoole-odbc=generic,dir,libname,ldflags,cflags. When built as
+  'shared' the extension filename is always pdo_odbc.so]])
+
+PHP_ARG_WITH([swoole-odbc],
+  ["for ODBC v3 support for PDO"],
+  [AS_HELP_STRING([--with-swoole-odbc=flavour,dir],
+    ["PDO: Support for 'flavour' ODBC driver."]PDO_ODBC_HELP_TEXT)], [no], [no])
+
+AC_DEFUN([PDO_ODBC_CHECK_HEADER],[
+  AC_MSG_CHECKING([for $1 in $PDO_ODBC_INCDIR])
+  if test -f "$PDO_ODBC_INCDIR/$1"; then
+    php_pdo_have_header=yes
+    PHP_DEF_HAVE(translit($1,.,_))
+    AC_MSG_RESULT(yes)
+  else
+    AC_MSG_RESULT(no)
+  fi
+])
 
 AC_DEFUN([SWOOLE_HAVE_PHP_EXT], [
     extname=$1
@@ -408,9 +438,12 @@ if test "$PHP_SWOOLE" != "no"; then
         AC_DEFINE(SW_CORO_TIME, 1, [do we enable to calculate coroutine execution time])
     fi
 
+    dnl pgsql begin
+
     if test "$PHP_SWOOLE_PGSQL" != "no"; then
         dnl TODO macros below can be reused to find curl things
         dnl prepare pkg-config
+
         if test -z "$PKG_CONFIG"; then
             AC_PATH_PROG(PKG_CONFIG, pkg-config, no)
         fi
@@ -478,12 +511,363 @@ EOF
         AC_DEFINE(SW_USE_PGSQL, 1, [do we enable postgresql coro support])
     fi
 
+    dnl pgsql end
+
+    dnl odbc begin
+
+	if test "$PHP_SWOOLE_ODBC" != "no"; then
+	  PHP_CHECK_PDO_INCLUDES
+
+	  AC_MSG_CHECKING([for selected PDO ODBC flavour])
+
+	  pdo_odbc_flavour="`echo $PHP_SWOOLE_ODBC | cut -d, -f1`"
+	  pdo_odbc_dir="`echo $PHP_SWOOLE_ODBC | cut -d, -f2`"
+
+	  if test "$pdo_odbc_dir" = "$PHP_SWOOLE_ODBC" ; then
+	    pdo_odbc_dir=
+	  fi
+
+	  case $pdo_odbc_flavour in
+	    ibm-db2)
+	        pdo_odbc_def_libdir=/home/db2inst1/sqllib/lib
+	        pdo_odbc_def_incdir=/home/db2inst1/sqllib/include
+	        pdo_odbc_def_lib=db2
+	        ;;
+
+	    iODBC|iodbc)
+	        pdo_odbc_def_libdir=/usr/local/$PHP_LIBDIR
+	        pdo_odbc_def_incdir=/usr/local/include
+	        pdo_odbc_def_lib=iodbc
+	        ;;
+
+	    unixODBC|unixodbc)
+	        pdo_odbc_def_libdir=/usr/local/$PHP_LIBDIR
+	        pdo_odbc_def_incdir=/usr/local/include
+	        pdo_odbc_def_lib=odbc
+	        ;;
+
+	    ODBCRouter|odbcrouter)
+	        pdo_odbc_def_libdir=/usr/$PHP_LIBDIR
+	        pdo_odbc_def_incdir=/usr/include
+	        pdo_odbc_def_lib=odbcsdk
+	        ;;
+
+	    generic)
+	        pdo_odbc_def_lib="`echo $PHP_SWOOLE_ODBC | cut -d, -f3`"
+	        pdo_odbc_def_ldflags="`echo $PHP_SWOOLE_ODBC | cut -d, -f4`"
+	        pdo_odbc_def_cflags="`echo $PHP_SWOOLE_ODBC | cut -d, -f5`"
+	        pdo_odbc_flavour="generic-$pdo_odbc_def_lib"
+	        ;;
+
+	      *)
+	        AC_MSG_ERROR([Unknown ODBC flavour $pdo_odbc_flavour]PDO_ODBC_HELP_TEXT)
+	        ;;
+	  esac
+
+	  if test -n "$pdo_odbc_dir"; then
+	    PDO_ODBC_INCDIR="$pdo_odbc_dir/include"
+	    PDO_ODBC_LIBDIR="$pdo_odbc_dir/$PHP_LIBDIR"
+	  else
+	    PDO_ODBC_INCDIR="$pdo_odbc_def_incdir"
+	    PDO_ODBC_LIBDIR="$pdo_odbc_def_libdir"
+	  fi
+
+	  AC_MSG_RESULT([$pdo_odbc_flavour
+	          libs       $PDO_ODBC_LIBDIR,
+	          headers    $PDO_ODBC_INCDIR])
+
+	  if test ! -d "$PDO_ODBC_LIBDIR" ; then
+	    AC_MSG_WARN([library dir $PDO_ODBC_LIBDIR does not exist])
+	  fi
+
+	  PDO_ODBC_CHECK_HEADER(odbc.h)
+	  PDO_ODBC_CHECK_HEADER(odbcsdk.h)
+	  PDO_ODBC_CHECK_HEADER(iodbc.h)
+	  PDO_ODBC_CHECK_HEADER(sqlunix.h)
+	  PDO_ODBC_CHECK_HEADER(sqltypes.h)
+	  PDO_ODBC_CHECK_HEADER(sqlucode.h)
+	  PDO_ODBC_CHECK_HEADER(sql.h)
+	  PDO_ODBC_CHECK_HEADER(isql.h)
+	  PDO_ODBC_CHECK_HEADER(sqlext.h)
+	  PDO_ODBC_CHECK_HEADER(isqlext.h)
+	  PDO_ODBC_CHECK_HEADER(udbcext.h)
+	  PDO_ODBC_CHECK_HEADER(sqlcli1.h)
+	  PDO_ODBC_CHECK_HEADER(LibraryManager.h)
+	  PDO_ODBC_CHECK_HEADER(cli0core.h)
+	  PDO_ODBC_CHECK_HEADER(cli0ext.h)
+	  PDO_ODBC_CHECK_HEADER(cli0cli.h)
+	  PDO_ODBC_CHECK_HEADER(cli0defs.h)
+	  PDO_ODBC_CHECK_HEADER(cli0env.h)
+
+	  if test "$php_pdo_have_header" != "yes"; then
+	    AC_MSG_ERROR([Cannot find header file(s) for pdo_odbc])
+	  fi
+
+	  PDO_ODBC_INCLUDE="$pdo_odbc_def_cflags -I$PDO_ODBC_INCDIR -DPDO_ODBC_TYPE=\\\"$pdo_odbc_flavour\\\""
+	  PDO_ODBC_LDFLAGS="$pdo_odbc_def_ldflags -L$PDO_ODBC_LIBDIR -l$pdo_odbc_def_lib"
+
+	  PHP_EVAL_LIBLINE([$PDO_ODBC_LDFLAGS], [SWOOLE_SHARED_LIBADD])
+
+	  EXTRA_CFLAGS="$EXTRA_CFLAGS -I$pdo_cv_inc_path $PDO_ODBC_INCLUDE"
+
+	  dnl Check first for an ODBC 1.0 function to assert that the libraries work
+	  PHP_CHECK_LIBRARY($pdo_odbc_def_lib, SQLBindCol,
+	  [
+	    dnl And now check for an ODBC 3.0 function to assert that they are *good*
+	    dnl libraries.
+	    PHP_CHECK_LIBRARY($pdo_odbc_def_lib, SQLAllocHandle,
+	    [], [
+	      AC_MSG_ERROR([
+	Your ODBC library does not appear to be ODBC 3 compatible.
+	You should consider using iODBC or unixODBC instead, and loading your
+	libraries as a driver in that environment; it will emulate the
+	functions required for PDO support.
+	])], $PDO_ODBC_LDFLAGS)
+	  ],[
+	    AC_MSG_ERROR([Your ODBC library does not exist or there was an error. Check config.log for more information])
+	  ], $PDO_ODBC_LDFLAGS)
+
+    	AC_DEFINE(SW_USE_ODBC, 1, [do we enable swoole-odbc coro support])
+	fi
+
+    dnl odbc end
+
+    dnl SWOOLE_ORACLE start
+    if test -z "$SED"; then
+        SWOOLE_PDO_OCI_SED="sed";
+    else
+        SWOOLE_PDO_OCI_SED="$SED";
+    fi
+
+    SWOOLE_PDO_OCI_TAIL1=`echo a | tail -n1 2>/dev/null`
+    if test "$SWOOLE_PDO_OCI_TAIL1" = "a"; then
+        SWOOLE_PDO_OCI_TAIL1="tail -n1"
+    else
+        SWOOLE_PDO_OCI_TAIL1="tail -1"
+    fi
+
+    AC_DEFUN([AC_PDO_OCI_VERSION],[
+        AC_MSG_CHECKING([Oracle version])
+        PDO_OCI_LCS_BASE=$PDO_OCI_LIB_DIR/libclntsh.$SHLIB_SUFFIX_NAME
+        dnl Oracle 10g, 11g, 12c etc
+        PDO_OCI_LCS=`ls $PDO_OCI_LCS_BASE.*.1 2> /dev/null | $SWOOLE_PDO_OCI_TAIL1`
+        if test -f "$PDO_OCI_LCS"; then
+            dnl Oracle 10g, 11g 12c etc. The x.2 version libraries are named x.1 for
+            dnl drop in compatibility
+            PDO_OCI_VERSION=`echo $PDO_OCI_LCS | $SWOOLE_PDO_OCI_SED -e 's/.*\.\(.*\)\.1$/\1.1/'`
+        elif test -f $PDO_OCI_LCS_BASE.9.0; then
+            dnl There is no case for Oracle 9.2. Oracle 9.2 libraries have a 9.0 suffix
+            dnl for drop-in compatibility with Oracle 9.0
+            PDO_OCI_VERSION=9.0
+        else
+            AC_MSG_ERROR(Oracle libclntsh.$SHLIB_SUFFIX_NAME client library not found or its version is lower than 9)
+        fi
+        AC_MSG_RESULT($PDO_OCI_VERSION)
+    ])
+
+    AC_DEFUN([AC_PDO_OCI_CHECK_LIB_DIR],[
+        AC_CHECK_SIZEOF([long])
+        AC_MSG_CHECKING([if we're at 64-bit platform])
+        AS_IF([test "$ac_cv_sizeof_long" -eq 4],[
+            AC_MSG_RESULT([no])
+            TMP_PDO_OCI_LIB_DIR="$PDO_OCI_DIR/lib32"
+        ],[
+            AC_MSG_RESULT([yes])
+            TMP_PDO_OCI_LIB_DIR="$PDO_OCI_DIR/lib"
+        ])
+
+        AC_MSG_CHECKING([OCI8 libraries dir])
+        if test -d "$PDO_OCI_DIR/lib" && test ! -d "$PDO_OCI_DIR/lib32"; then
+            PDO_OCI_LIB_DIR="$PDO_OCI_DIR/lib"
+        elif test ! -d "$PDO_OCI_DIR/lib" && test -d "$PDO_OCI_DIR/lib32"; then
+            PDO_OCI_LIB_DIR="$PDO_OCI_DIR/lib32"
+        elif test -d "$PDO_OCI_DIR/lib" && test -d "$PDO_OCI_DIR/lib32"; then
+            PDO_OCI_LIB_DIR=$TMP_PDO_OCI_LIB_DIR
+        else
+            AC_MSG_ERROR([Oracle required OCI8 libraries not found])
+        fi
+        AC_MSG_RESULT($PDO_OCI_LIB_DIR)
+    ])
+
+    PHP_ARG_WITH([swoole-oracle],
+        [whether to enable oracle build flags],
+        [AS_HELP_STRING([[--with-swoole-oracle[=DIR]]],
+            [PDO: Oracle OCI support. DIR defaults to $ORACLE_HOME. Use
+            --with-swoole-oracle=instantclient,/path/to/instant/client/lib for an Oracle
+            Instant Client installation.])], [no], [no])
+
+    if test "$PHP_SWOOLE_ORACLE" != "no"; then
+        if test "$PHP_PDO" = "no" && test "$ext_shared" = "no"; then
+            AC_MSG_ERROR([PDO is not enabled! Add --enable-pdo to your configure line.])
+        fi
+
+        AC_MSG_CHECKING([Oracle Install-Dir])
+        if test "$PHP_SWOOLE_ORACLE" = "yes" || test -z "$PHP_SWOOLE_ORACLE"; then
+            PDO_OCI_DIR=$ORACLE_HOME
+        else
+            PDO_OCI_DIR=$PHP_SWOOLE_ORACLE
+        fi
+        AC_MSG_RESULT($PHP_SWOOLE_ORACLE)
+
+        AC_MSG_CHECKING([if that is sane])
+        if test -z "$PDO_OCI_DIR"; then
+            AC_MSG_ERROR([You need to tell me where to find your Oracle Instant Client SDK, or set ORACLE_HOME.])
+        else
+            AC_MSG_RESULT([yes])
+        fi
+
+        if test "instantclient" = "`echo $PDO_OCI_DIR | cut -d, -f1`" ; then
+            AC_CHECK_SIZEOF([long])
+            AC_MSG_CHECKING([if we're at 64-bit platform])
+            AS_IF([test "$ac_cv_sizeof_long" -eq 4],[
+                AC_MSG_RESULT([no])
+                PDO_OCI_CLIENT_DIR="client"
+            ],[
+                AC_MSG_RESULT([yes])
+                PDO_OCI_CLIENT_DIR="client64"
+            ])
+
+            PDO_OCI_LIB_DIR="`echo $PDO_OCI_DIR | cut -d, -f2`"
+            AC_PDO_OCI_VERSION($PDO_OCI_LIB_DIR)
+
+            AC_MSG_CHECKING([for oci.h])
+            dnl Header directory for Instant Client SDK RPM install
+            OCISDKRPMINC=`echo "$PDO_OCI_LIB_DIR" | $SWOOLE_PDO_OCI_SED -e 's!^\(.*\)/lib/oracle/\(.*\)/\('${PDO_OCI_CLIENT_DIR}'\)/lib[/]*$!\1/include/oracle/\2/\3!'`
+
+            dnl Header directory for manual installation
+            OCISDKMANINC=`echo "$PDO_OCI_LIB_DIR" | $SWOOLE_PDO_OCI_SED -e 's!^\(.*\)/lib[/]*$!\1/include!'`
+
+            dnl Header directory for Instant Client SDK zip file install
+            OCISDKZIPINC=$PDO_OCI_LIB_DIR/sdk/include
+
+            if test -f "$OCISDKRPMINC/oci.h" ; then
+                PHP_ADD_INCLUDE($OCISDKRPMINC)
+                AC_MSG_RESULT($OCISDKRPMINC)
+            elif test -f "$OCISDKMANINC/oci.h" ; then
+                PHP_ADD_INCLUDE($OCISDKMANINC)
+                AC_MSG_RESULT($OCISDKMANINC)
+            elif test -f "$OCISDKZIPINC/oci.h" ; then
+                PHP_ADD_INCLUDE($OCISDKZIPINC)
+                AC_MSG_RESULT($OCISDKZIPINC)
+            else
+                AC_MSG_ERROR([I'm too dumb to figure out where the include dir is in your Instant Client install])
+            fi
+        else
+            AC_PDO_OCI_CHECK_LIB_DIR($PDO_OCI_DIR)
+
+            if test -d "$PDO_OCI_DIR/rdbms/public"; then
+                PHP_ADD_INCLUDE($PDO_OCI_DIR/rdbms/public)
+                PDO_OCI_INCLUDES="$PDO_OCI_INCLUDES -I$PDO_OCI_DIR/rdbms/public"
+            fi
+            if test -d "$PDO_OCI_DIR/rdbms/demo"; then
+                PHP_ADD_INCLUDE($PDO_OCI_DIR/rdbms/demo)
+                PDO_OCI_INCLUDES="$PDO_OCI_INCLUDES -I$PDO_OCI_DIR/rdbms/demo"
+            fi
+            if test -d "$PDO_OCI_DIR/network/public"; then
+                PHP_ADD_INCLUDE($PDO_OCI_DIR/network/public)
+                PDO_OCI_INCLUDES="$PDO_OCI_INCLUDES -I$PDO_OCI_DIR/network/public"
+            fi
+            if test -d "$PDO_OCI_DIR/plsql/public"; then
+                PHP_ADD_INCLUDE($PDO_OCI_DIR/plsql/public)
+                PDO_OCI_INCLUDES="$PDO_OCI_INCLUDES -I$PDO_OCI_DIR/plsql/public"
+            fi
+            if test -d "$PDO_OCI_DIR/include"; then
+                PHP_ADD_INCLUDE($PDO_OCI_DIR/include)
+                PDO_OCI_INCLUDES="$PDO_OCI_INCLUDES -I$PDO_OCI_DIR/include"
+            fi
+
+            if test -f "$PDO_OCI_LIB_DIR/sysliblist"; then
+                PHP_EVAL_LIBLINE(`cat $PDO_OCI_LIB_DIR/sysliblist`, SWOOLE_SHARED_LIBADD)
+            elif test -f "$PDO_OCI_DIR/rdbms/lib/sysliblist"; then
+                PHP_EVAL_LIBLINE(`cat $PDO_OCI_DIR/rdbms/lib/sysliblist`, SWOOLE_SHARED_LIBADD)
+            fi
+            AC_PDO_OCI_VERSION($PDO_OCI_LIB_DIR)
+        fi
+
+        case $PDO_OCI_VERSION in
+            7.3|8.0|8.1)
+                AC_MSG_ERROR([Oracle client libraries < 9 are not supported])
+                ;;
+        esac
+
+        PHP_ADD_LIBRARY(clntsh, 1, SWOOLE_SHARED_LIBADD)
+        PHP_ADD_LIBPATH($PDO_OCI_LIB_DIR, SWOOLE_SHARED_LIBADD)
+
+        PHP_CHECK_LIBRARY(clntsh, OCIEnvCreate,
+        [
+            AC_DEFINE(HAVE_OCIENVCREATE,1,[ ])
+        ], [], [
+            -L$PDO_OCI_LIB_DIR $SWOOLE_SHARED_LIBADD
+        ])
+
+        PHP_CHECK_LIBRARY(clntsh, OCIEnvNlsCreate,
+        [
+            AC_DEFINE(HAVE_OCIENVNLSCREATE,1,[ ])
+        ], [], [
+            -L$PDO_OCI_LIB_DIR $SWOOLE_SHARED_LIBADD
+        ])
+
+        dnl Scrollable cursors?
+        PHP_CHECK_LIBRARY(clntsh, OCIStmtFetch2,
+        [
+            AC_DEFINE(HAVE_OCISTMTFETCH2,1,[ ])
+        ], [], [
+            -L$PDO_OCI_LIB_DIR $SWOOLE_SHARED_LIBADD
+        ])
+
+        dnl Can handle bytes vs. characters?
+        PHP_CHECK_LIBRARY(clntsh, OCILobRead2,
+        [
+           AC_DEFINE(HAVE_OCILOBREAD2,1,[ ])
+        ], [], [
+           -L$PDO_OCI_LIB_DIR $SWOOLE_SHARED_LIBADD
+        ])
+
+        EXTRA_CFLAGS="$EXTRA_CFLAGS -I$pdo_cv_inc_path $PDO_OCI_INCLUDE"
+        PHP_CHECK_PDO_INCLUDES
+        AC_DEFINE_UNQUOTED(SWOOLE_PDO_OCI_CLIENT_VERSION, "$PDO_OCI_VERSION", [ ])
+        AC_DEFINE(SW_USE_ORACLE, 1, [do we enable oracle coro support])
+    fi
+    dnl SWOOLE_ORACLE stop
+
+    dnl sqlite start
+    PHP_ARG_ENABLE([swoole-sqlite],
+        [for sqlite 3 support for PDO],
+        [AS_HELP_STRING([--enable-swoole-sqlite],
+            [PDO: sqlite 3 support.])], [no], [no])
+
+    if test "$PHP_SWOOLE_SQLITE" != "no"; then
+
+        if test "$PHP_PDO" = "no" && test "$ext_shared" = "no"; then
+            AC_MSG_ERROR([PDO is not enabled! Add --enable-pdo to your configure line.])
+        fi
+
+        PHP_CHECK_PDO_INCLUDES
+
+        PKG_CHECK_MODULES([SQLITE], [sqlite3 >= 3.7.7])
+
+        PHP_EVAL_INCLINE($SQLITE_CFLAGS)
+        PHP_EVAL_LIBLINE($SQLITE_LIBS, SWOOLE_SHARED_LIBADD)
+        AC_DEFINE(HAVE_SW_PDO_SQLITELIB, 1, [Define to 1 if you have the pdo_sqlite extension enabled.])
+
+        PHP_CHECK_LIBRARY(sqlite3, sqlite3_close_v2, [
+            AC_DEFINE(HAVE_SW_SQLITE3_CLOSE_V2, 1, [have sqlite3_close_v2])
+        ], [], [$SWOOLE_SHARED_LIBADD])
+
+        PHP_CHECK_LIBRARY(sqlite3, sqlite3_column_table_name, [
+            AC_DEFINE(HAVE_SW_SQLITE3_COLUMN_TABLE_NAME, 1, [have sqlite3_column_table_name])
+        ], [], [$SWOOLE_SHARED_LIBADD])
+
+        AC_DEFINE(SW_USE_SQLITE, 1, [do we enable sqlite coro support])
+    fi
+    dnl sqlite stop
+
     AC_CHECK_LIB(z, gzgets, [
         AC_DEFINE(SW_HAVE_COMPRESSION, 1, [have compression])
         AC_DEFINE(SW_HAVE_ZLIB, 1, [have zlib])
         PHP_ADD_LIBRARY(z, 1, SWOOLE_SHARED_LIBADD)
     ])
-    
+
     if test "$PHP_BROTLI" = "yes"; then
         AC_CHECK_LIB(brotlienc, BrotliEncoderCreateInstance, [
             AC_CHECK_LIB(brotlidec, BrotliDecoderCreateInstance, [
@@ -582,18 +966,21 @@ EOF
         PHP_ADD_LIBRARY(ssl, 1, SWOOLE_SHARED_LIBADD)
         PHP_ADD_LIBRARY(crypto, 1, SWOOLE_SHARED_LIBADD)
     fi
-    
-    if test "$PHP_BROTLI_DIR" != "no"; then
-        AC_DEFINE(SW_HAVE_BROTLI, 1, [have brotli encoder])
-        PHP_ADD_INCLUDE("${PHP_BROTLI_DIR}/include")
-        PHP_ADD_LIBRARY_WITH_PATH(brotli, "${PHP_BROTLI_DIR}/${PHP_LIBDIR}")
-    fi
 
     if test "$PHP_BROTLI_DIR" != "no"; then
         AC_DEFINE(SW_HAVE_COMPRESSION, 1, [have compression])
         AC_DEFINE(SW_HAVE_BROTLI, 1, [have brotli encoder])
+        PHP_ADD_INCLUDE("${PHP_BROTLI_DIR}/include")
+        PHP_ADD_LIBRARY_WITH_PATH(brotli, "${PHP_BROTLI_DIR}/${PHP_LIBDIR}")
         PHP_ADD_LIBRARY_WITH_PATH(brotlienc, "${PHP_BROTLI_DIR}/${PHP_LIBDIR}")
         PHP_ADD_LIBRARY_WITH_PATH(brotlidec, "${PHP_BROTLI_DIR}/${PHP_LIBDIR}")
+    fi
+
+    if test "$PHP_NGHTTP2_DIR" != "no"; then
+        AC_DEFINE(SW_USE_SYSTEM_LIBNGHTTP2, 1, [Use the system libnghttp2])
+        PHP_ADD_INCLUDE("${PHP_NGHTTP2_DIR}/include")
+        PHP_ADD_LIBRARY_WITH_PATH(nghttp2, "${PHP_NGHTTP2_DIR}/${PHP_LIBDIR}")
+        PHP_ADD_LIBRARY(nghttp2, 1, SWOOLE_SHARED_LIBADD)
     fi
 
     if test "$PHP_JEMALLOC_DIR" != "no"; then
@@ -636,6 +1023,10 @@ EOF
         ext-src/swoole_mysql_proto.cc \
         ext-src/swoole_name_resolver.cc \
         ext-src/swoole_postgresql_coro.cc \
+        ext-src/swoole_pgsql.cc \
+        ext-src/swoole_odbc.cc \
+        ext-src/swoole_oracle.cc \
+        ext-src/swoole_sqlite.cc \
         ext-src/swoole_process.cc \
         ext-src/swoole_process_pool.cc \
         ext-src/swoole_redis_coro.cc \
@@ -648,6 +1039,7 @@ EOF
         ext-src/swoole_timer.cc \
         ext-src/swoole_websocket_server.cc \
         src/core/base.cc \
+        src/core/base64.cc \
         src/core/channel.cc \
         src/core/crc32.cc \
         src/core/error.cc \
@@ -689,10 +1081,10 @@ EOF
         src/os/unix_socket.cc \
         src/os/wait.cc \
         src/protocol/base.cc \
-        src/protocol/base64.cc \
         src/protocol/dtls.cc \
         src/protocol/http.cc \
         src/protocol/http2.cc \
+        src/protocol/message_bus.cc \
         src/protocol/mime_type.cc \
         src/protocol/mqtt.cc \
         src/protocol/redis.cc \
@@ -707,7 +1099,6 @@ EOF
         src/server/base.cc \
         src/server/manager.cc \
         src/server/master.cc \
-        src/server/message_bus.cc \
         src/server/port.cc \
         src/server/process.cc \
         src/server/reactor_process.cc \
@@ -740,14 +1131,49 @@ EOF
         thirdparty/hiredis/read.c \
         thirdparty/hiredis/sds.c"
 
-    swoole_source_file="$swoole_source_file \
-        thirdparty/nghttp2/nghttp2_hd.c \
-        thirdparty/nghttp2/nghttp2_rcbuf.c \
-        thirdparty/nghttp2/nghttp2_helper.c \
-        thirdparty/nghttp2/nghttp2_buf.c \
-        thirdparty/nghttp2/nghttp2_mem.c \
-        thirdparty/nghttp2/nghttp2_hd_huffman.c \
-        thirdparty/nghttp2/nghttp2_hd_huffman_data.c"
+    if test "$PHP_NGHTTP2_DIR" = "no"; then
+        PHP_ADD_INCLUDE([$ext_srcdir/thirdparty])
+	    swoole_source_file="$swoole_source_file \
+	        thirdparty/nghttp2/nghttp2_hd.c \
+	        thirdparty/nghttp2/nghttp2_rcbuf.c \
+	        thirdparty/nghttp2/nghttp2_helper.c \
+	        thirdparty/nghttp2/nghttp2_buf.c \
+	        thirdparty/nghttp2/nghttp2_mem.c \
+	        thirdparty/nghttp2/nghttp2_hd_huffman.c \
+	        thirdparty/nghttp2/nghttp2_hd_huffman_data.c"
+	fi
+
+	if test "$PHP_SWOOLE_PGSQL" != "no"; then
+	    swoole_source_file="$swoole_source_file \
+	        thirdparty/php80/pdo_pgsql/pgsql_driver.c \
+	        thirdparty/php80/pdo_pgsql/pgsql_statement.c \
+	        thirdparty/php81/pdo_pgsql/pgsql_driver.c \
+	        thirdparty/php81/pdo_pgsql/pgsql_statement.c"
+	fi
+
+	if test "$PHP_SWOOLE_ORACLE" != "no"; then
+        swoole_source_file="$swoole_source_file \
+            thirdparty/php80/pdo_oci/oci_driver.c \
+            thirdparty/php80/pdo_oci/oci_statement.c \
+            thirdparty/php81/pdo_oci/oci_driver.c \
+            thirdparty/php81/pdo_oci/oci_statement.c"
+    fi
+
+	if test "$PHP_SWOOLE_ODBC" != "no"; then
+	    swoole_source_file="$swoole_source_file \
+	        thirdparty/php80/pdo_odbc/odbc_driver.c \
+	        thirdparty/php80/pdo_odbc/odbc_stmt.c \
+	        thirdparty/php81/pdo_odbc/odbc_driver.c \
+	        thirdparty/php81/pdo_odbc/odbc_stmt.c"
+	fi
+
+	if test "$PHP_SWOOLE_SQLITE" != "no"; then
+        swoole_source_file="$swoole_source_file \
+            thirdparty/php80/pdo_sqlite/sqlite_driver.c \
+            thirdparty/php80/pdo_sqlite/sqlite_statement.c \
+            thirdparty/php81/pdo_sqlite/sqlite_driver.c \
+            thirdparty/php81/pdo_sqlite/sqlite_statement.c"
+    fi
 
     SW_ASM_DIR="thirdparty/boost/asm/"
     SW_USE_ASM_CONTEXT="yes"
@@ -840,7 +1266,9 @@ EOF
         AC_DEFINE(SW_USE_ASM_CONTEXT, 1, [use boost asm context])
     fi
 
-    PHP_NEW_EXTENSION(swoole, $swoole_source_file, $ext_shared,, "$EXTRA_CFLAGS -DENABLE_PHP_SWOOLE", cxx)
+    EXTRA_CFLAGS="$EXTRA_CFLAGS -DENABLE_PHP_SWOOLE"
+
+    PHP_NEW_EXTENSION(swoole, $swoole_source_file, $ext_shared,, "$EXTRA_CFLAGS", cxx)
 
     PHP_ADD_INCLUDE([$ext_srcdir])
     PHP_ADD_INCLUDE([$ext_srcdir/include])
@@ -892,8 +1320,10 @@ EOF
     PHP_ADD_BUILD_DIR($ext_builddir/thirdparty/boost)
     PHP_ADD_BUILD_DIR($ext_builddir/thirdparty/boost/asm)
     PHP_ADD_BUILD_DIR($ext_builddir/thirdparty/hiredis)
-    PHP_ADD_BUILD_DIR($ext_builddir/thirdparty/nghttp2)
     PHP_ADD_BUILD_DIR($ext_builddir/thirdparty/php/sockets)
     PHP_ADD_BUILD_DIR($ext_builddir/thirdparty/php/standard)
     PHP_ADD_BUILD_DIR($ext_builddir/thirdparty/php/curl)
+    if test "$PHP_NGHTTP2_DIR" = "no"; then
+        PHP_ADD_BUILD_DIR($ext_builddir/thirdparty/nghttp2)
+	fi
 fi

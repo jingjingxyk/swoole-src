@@ -11,41 +11,7 @@ static const char *sw_known_strings[] = {
 SW_API zend_string **sw_zend_known_strings = nullptr;
 
 //----------------------------------known string------------------------------------
-
-#if PHP_VERSION_ID < 80200
-#define ZEND_COMPILE_POSITION_DC
-#define ZEND_COMPILE_POSITION_RELAY_C
-#else
-#define ZEND_COMPILE_POSITION_DC , zend_compile_position position
-#define ZEND_COMPILE_POSITION_RELAY_C , position
-#endif
-
-// for compatibly with dis_eval
-static zend_op_array *(*old_compile_string)(zend_string *source_string, const char *filename ZEND_COMPILE_POSITION_DC);
-
-static zend_op_array *swoole_compile_string(zend_string *source_string, const char *filename ZEND_COMPILE_POSITION_DC) {
-    if (UNEXPECTED(EG(exception))) {
-        zend_exception_error(EG(exception), E_ERROR);
-        return nullptr;
-    }
-    zend_op_array *opa = old_compile_string(source_string, filename ZEND_COMPILE_POSITION_RELAY_C);
-    opa->type = ZEND_USER_FUNCTION;
-    return opa;
-}
-
 namespace zend {
-bool eval(const std::string &code, std::string const &filename) {
-    if (!old_compile_string) {
-        old_compile_string = zend_compile_string;
-    }
-    // overwrite
-    zend_compile_string = swoole_compile_string;
-    int ret = (zend_eval_stringl((char *) code.c_str(), code.length(), nullptr, (char *) filename.c_str()) == SUCCESS);
-    // recover
-    zend_compile_string = old_compile_string;
-    return ret;
-}
-
 void known_strings_init(void) {
     zend_string *str;
     sw_zend_known_strings = nullptr;
@@ -73,7 +39,7 @@ bool call(zend_fcall_info_cache *fci_cache, uint32_t argc, zval *argv, zval *ret
             /* the coroutine has no return value */
             ZVAL_NULL(retval);
         }
-        success = swoole::PHPCoroutine::create(fci_cache, argc, argv) >= 0;
+        success = swoole::PHPCoroutine::create(fci_cache, argc, argv, nullptr) >= 0;
     } else {
         success = sw_zend_call_function_ex(nullptr, fci_cache, argc, argv, retval) == SUCCESS;
     }
@@ -84,10 +50,10 @@ bool call(zend_fcall_info_cache *fci_cache, uint32_t argc, zval *argv, zval *ret
     return success;
 }
 
-ReturnValue call(const std::string &func_name, int argc, zval *argv) {
+Variable call(const std::string &func_name, int argc, zval *argv) {
     zval function_name;
     ZVAL_STRINGL(&function_name, func_name.c_str(), func_name.length());
-    ReturnValue retval;
+    Variable retval;
     if (call_user_function(EG(function_table), NULL, &function_name, &retval.value, argc, argv) != SUCCESS) {
         ZVAL_NULL(&retval.value);
     }

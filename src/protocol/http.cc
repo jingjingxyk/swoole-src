@@ -18,6 +18,7 @@
 #include "swoole_server.h"
 
 #include <string>
+#include <sstream>
 
 #include "swoole_util.h"
 #include "swoole_http2.h"
@@ -75,7 +76,7 @@ bool Server::select_static_handler(http_server::Request *request, Connection *co
     auto date_str = handler.get_date();
     auto date_str_last_modified = handler.get_date_last_modified();
 
-    string date_if_modified_since = request->get_date_if_modified_since();
+    string date_if_modified_since = request->get_header("If-Modified-Since");
     if (!date_if_modified_since.empty() && handler.is_modified(date_if_modified_since)) {
         response.info.len = sw_snprintf(header_buffer,
                                         sizeof(header_buffer),
@@ -133,22 +134,42 @@ bool Server::select_static_handler(http_server::Request *request, Connection *co
         return true;
     }
 
-    auto task = handler.get_task();
-    response.info.len = sw_snprintf(header_buffer,
-                                    sizeof(header_buffer),
-                                    "HTTP/1.1 200 OK\r\n"
-                                    "Connection: %s\r\n"
-                                    "Content-Length: %ld\r\n"
-                                    "Content-Type: %s\r\n"
-                                    "Date: %s\r\n"
-                                    "Last-Modified: %s\r\n"
-                                    "Server: %s\r\n\r\n",
-                                    request->keep_alive ? "keep-alive" : "close",
-                                    (long) task->length,
-                                    handler.get_mimetype(),
-                                    date_str.c_str(),
-                                    date_str_last_modified.c_str(),
-                                    SW_HTTP_SERVER_SOFTWARE);
+    handler.parse_range(request->get_header("Range").c_str(), request->get_header("If-Range").c_str());
+    auto tasks = handler.get_tasks();
+
+    std::stringstream header_stream;
+    if (1 == tasks.size()) {
+        if (0 == tasks[0].offset && tasks[0].length == handler.get_filesize()) {
+            header_stream << "Accept-Ranges: bytes\r\n";
+        } else {
+            header_stream << "Content-Range: bytes";
+            if (tasks[0].length != handler.get_filesize()) {
+                header_stream << " " << tasks[0].offset << "-" << (tasks[0].length + tasks[0].offset - 1) << "/"
+                              << handler.get_filesize();
+            }
+            header_stream << "\r\n";
+        }
+    }
+
+    response.info.len =
+        sw_snprintf(header_buffer,
+                    sizeof(header_buffer),
+                    "HTTP/1.1 %s\r\n"
+                    "Connection: %s\r\n"
+                    "Content-Length: %ld\r\n"
+                    "Content-Type: %s\r\n"
+                    "%s"
+                    "Date: %s\r\n"
+                    "Last-Modified: %s\r\n"
+                    "Server: %s\r\n\r\n",
+                    http_server::get_status_message(handler.status_code),
+                    request->keep_alive ? "keep-alive" : "close",
+                    SW_HTTP_HEAD == request->method ? 0 : handler.get_content_length(),
+                    SW_HTTP_HEAD == request->method ? handler.get_mimetype() : handler.get_content_type(),
+                    header_stream.str().c_str(),
+                    date_str.c_str(),
+                    date_str_last_modified.c_str(),
+                    SW_HTTP_SERVER_SOFTWARE);
 
     response.data = header_buffer;
 
@@ -159,11 +180,40 @@ bool Server::select_static_handler(http_server::Request *request, Connection *co
     send_to_connection(&response);
 
     // Send HTTP body
-    if (task->length != 0) {
-        response.info.type = SW_SERVER_EVENT_SEND_FILE;
-        response.info.len = sizeof(*task) + task->length + 1;
-        response.data = (char *) task;
-        send_to_connection(&response);
+    if (SW_HTTP_HEAD != request->method) {
+        if (!tasks.empty()) {
+            size_t task_size = sizeof(network::SendfileTask) + strlen(handler.get_filename()) + 1;
+            network::SendfileTask *task = (network::SendfileTask *) sw_malloc(task_size);
+            strcpy(task->filename, handler.get_filename());
+            if (tasks.size() > 1) {
+                for (auto i = tasks.begin(); i != tasks.end(); i++) {
+                    response.info.type = SW_SERVER_EVENT_SEND_DATA;
+                    response.info.len = strlen(i->part_header);
+                    response.data = i->part_header;
+                    send_to_connection(&response);
+
+                    task->offset = i->offset;
+                    task->length = i->length;
+                    response.info.type = SW_SERVER_EVENT_SEND_FILE;
+                    response.info.len = task_size;
+                    response.data = (char *) task;
+                    send_to_connection(&response);
+                }
+
+                response.info.type = SW_SERVER_EVENT_SEND_DATA;
+                response.info.len = strlen(handler.get_end_part());
+                response.data = handler.get_end_part();
+                send_to_connection(&response);
+            } else if (tasks[0].length > 0) {
+                task->offset = tasks[0].offset;
+                task->length = tasks[0].length;
+                response.info.type = SW_SERVER_EVENT_SEND_FILE;
+                response.info.len = task_size;
+                response.data = (char *) task;
+                send_to_connection(&response);
+            }
+            sw_free(task);
+        }
     }
 
     // Close the connection if keepalive is not used
@@ -248,25 +298,34 @@ static int multipart_on_header_value(multipart_parser *p, const char *at, size_t
 }
 
 static int multipart_on_data(multipart_parser *p, const char *at, size_t length) {
-    Request *request = (Request *) p->data;
+    auto request = (Request *) p->data;
+    auto form_data = request->form_data_;
     swoole_trace("on_data: length=%lu", length);
 
     if (!p->fp) {
-        request->form_data_->multipart_buffer_->append(at, length);
+        if (form_data->multipart_buffer_->length + length > request->max_length_) {
+            request->excepted = 1;
+            request->unavailable = 1;
+            return 1;
+        }
+        form_data->multipart_buffer_->append(at, length);
         return 0;
     }
 
-    request->form_data_->upload_filesize += length;
-    if (request->form_data_->upload_filesize > request->form_data_->upload_max_filesize) {
+    form_data->upload_filesize += length;
+    if (form_data->upload_filesize > form_data->upload_max_filesize) {
+        request->excepted = 1;
         request->too_large = 1;
         return 1;
     }
+
     ssize_t n = fwrite(at, sizeof(char), length, p->fp);
     if (n != (off_t) length) {
         fclose(p->fp);
         p->fp = nullptr;
         request->excepted = 1;
-        swoole_sys_warning("write upload file failed");
+        request->unavailable = 1;
+        swoole_sys_warning("failed to write upload file");
         return 1;
     }
 
@@ -302,10 +361,10 @@ static int multipart_on_data_end(multipart_parser *p) {
 }
 
 static int multipart_on_part_begin(multipart_parser *p) {
-    swoole_trace("on_part_begi\n");
+    swoole_trace("on_part_begin");
     Request *request = (Request *) p->data;
     FormData *form_data = request->form_data_;
-    form_data->multipart_buffer_->append(p->multipart_boundary, p->boundary_length);
+    form_data->multipart_buffer_->append(p->boundary, p->boundary_length);
     form_data->multipart_buffer_->append(SW_STRL("\r\n"));
     return 0;
 }
@@ -313,7 +372,7 @@ static int multipart_on_part_begin(multipart_parser *p) {
 static int multipart_on_body_end(multipart_parser *p) {
     Request *request = (Request *) p->data;
     FormData *form_data = request->form_data_;
-    form_data->multipart_buffer_->append(p->multipart_boundary, p->boundary_length);
+    form_data->multipart_buffer_->append(p->boundary, p->boundary_length);
     form_data->multipart_buffer_->append(SW_STRL("--"));
 
     request->content_length_ = form_data->multipart_buffer_->length - request->header_length_;
@@ -327,7 +386,7 @@ static int multipart_on_body_end(multipart_parser *p) {
     char *ptr_end = request->multipart_buffer_->str + (request->multipart_buffer_->length - (sizeof("\r\n\r\n") - 1));
 
     for (; ptr < ptr_end; ptr++) {
-        if (SW_STRCASECT(ptr, ptr_end - ptr, "Content-Length:")) {
+        if (SW_STR_ISTARTS_WITH(ptr, ptr_end - ptr, "Content-Length:")) {
             ptr += (sizeof("Content-Length:") - 1);
             // skip spaces
             while (*ptr == ' ') {
@@ -533,7 +592,7 @@ bool parse_multipart_boundary(
             offset++;
             continue;
         }
-        if (SW_STRCASECT(at + offset, length - offset, "boundary=")) {
+        if (SW_STR_ISTARTS_WITH(at + offset, length - offset, "boundary=")) {
             offset += sizeof("boundary=") - 1;
             break;
         }
@@ -772,7 +831,7 @@ void Request::parse_header_info() {
 
     for (; p < pe; p++) {
         if (*(p - 1) == '\n' && *(p - 2) == '\r') {
-            if (SW_STRCASECT(p, pe - p, "Content-Length:")) {
+            if (SW_STR_ISTARTS_WITH(p, pe - p, "Content-Length:")) {
                 // strlen("Content-Length:")
                 p += (sizeof("Content-Length:") - 1);
                 // skip spaces
@@ -781,32 +840,32 @@ void Request::parse_header_info() {
                 }
                 content_length_ = strtoull(p, nullptr, 10);
                 known_length = 1;
-            } else if (SW_STRCASECT(p, pe - p, "Connection:")) {
+            } else if (SW_STR_ISTARTS_WITH(p, pe - p, "Connection:")) {
                 // strlen("Connection:")
                 p += (sizeof("Connection:") - 1);
                 // skip spaces
                 while (*p == ' ') {
                     p++;
                 }
-                if (SW_STRCASECT(p, pe - p, "keep-alive")) {
+                if (SW_STR_ISTARTS_WITH(p, pe - p, "keep-alive")) {
                     keep_alive = 1;
                 }
-            } else if (SW_STRCASECT(p, pe - p, "Transfer-Encoding:")) {
+            } else if (SW_STR_ISTARTS_WITH(p, pe - p, "Transfer-Encoding:")) {
                 // strlen("Transfer-Encoding:")
                 p += (sizeof("Transfer-Encoding:") - 1);
                 // skip spaces
                 while (*p == ' ') {
                     p++;
                 }
-                if (SW_STRCASECT(p, pe - p, "chunked")) {
+                if (SW_STR_ISTARTS_WITH(p, pe - p, "chunked")) {
                     chunked = 1;
                 }
-            } else if (SW_STRCASECT(p, pe - p, "Content-Type:")) {
+            } else if (SW_STR_ISTARTS_WITH(p, pe - p, "Content-Type:")) {
                 p += (sizeof("Content-Type:") - 1);
                 while (*p == ' ') {
                     p++;
                 }
-                if (SW_STRCASECT(p, pe - p, "multipart/form-data")) {
+                if (SW_STR_ISTARTS_WITH(p, pe - p, "multipart/form-data")) {
                     form_data_ = new FormData();
                     form_data_->multipart_boundary_buf = p + (sizeof("multipart/form-data") - 1);
                     form_data_->multipart_boundary_len = strchr(p, '\r') - form_data_->multipart_boundary_buf;
@@ -866,15 +925,25 @@ void Request::destroy_multipart_parser() {
 }
 
 bool Request::parse_multipart_data(String *buffer) {
-    size_t n = multipart_parser_execute(form_data_->multipart_parser_, buffer->str, buffer->length);
+    excepted = 0;
+    ssize_t n = multipart_parser_execute(form_data_->multipart_parser_, buffer->str, buffer->length);
     swoole_trace("multipart_parser_execute: buffer->length=%lu, n=%lu\n", buffer->length, n);
-    if (n != buffer->length) {
-        swoole_error_log(SW_LOG_WARNING,
+    if (n < 0) {
+        int l_error =
+            multipart_parser_error_msg(form_data_->multipart_parser_, sw_tg_buffer()->str, sw_tg_buffer()->size);
+        swoole_error_log(SW_LOG_NOTICE,
+                         SW_ERROR_SERVER_INVALID_REQUEST,
+                         "parse multipart body failed, reason: %.*s",
+                         l_error,
+                         sw_tg_buffer()->str);
+        return false;
+    } else if ((size_t) n != buffer->length) {
+        swoole_error_log(SW_LOG_NOTICE,
                          SW_ERROR_SERVER_INVALID_REQUEST,
                          "parse multipart body failed, %zu/%zu bytes processed",
                          n,
                          buffer->length);
-        return false;
+        return excepted;
     }
     buffer->clear();
     return true;
@@ -898,9 +967,9 @@ bool Request::has_expect_header() {
     for (p = buf; p < pe; p++) {
         if (*p == '\r' && (size_t)(pe - p) > sizeof("\r\nExpect")) {
             p += 2;
-            if (SW_STRCASECT(p, pe - p, "Expect: ")) {
+            if (SW_STR_ISTARTS_WITH(p, pe - p, "Expect: ")) {
                 p += sizeof("Expect: ") - 1;
-                if (SW_STRCASECT(p, pe - p, "100-continue")) {
+                if (SW_STR_ISTARTS_WITH(p, pe - p, "100-continue")) {
                     return true;
                 } else {
                     return false;
@@ -963,34 +1032,50 @@ int Request::get_chunked_body_length() {
     return SW_OK;
 }
 
-string Request::get_date_if_modified_since() {
+string Request::get_header(const char *name) {
+    size_t name_len = strlen(name);
     char *p = buffer_->str + url_offset_ + url_length_ + 10;
     char *pe = buffer_->str + header_length_;
 
-    string result;
-
-    char *date_if_modified_since = nullptr;
-    size_t length_if_modified_since = 0;
+    char *buffer = nullptr;
+    char *colon = nullptr;
 
     int state = 0;
+    int i = 0;
+
+    bool is_error_header_name = false;
+
     for (; p < pe; p++) {
         switch (state) {
         case 0:
-            if (SW_STRCASECT(p, pe - p, "If-Modified-Since")) {
-                p += sizeof("If-Modified-Since");
+            if (SW_STR_ISTARTS_WITH(p, pe - p, "\r\n")) {
+                i = 0;
+                is_error_header_name = false;
+                break;
+            }
+
+            if (!is_error_header_name && swoole_str_istarts_with(p, pe - p, name, name_len)) {
+                colon = p + name_len;
+                if (colon[0] != ':' || i > 1) {
+                    is_error_header_name = true;
+                    break;
+                }
+
+                p += name_len;
                 state = 1;
             }
+
+            i++;
             break;
         case 1:
             if (!isspace(*p)) {
-                date_if_modified_since = p;
+                buffer = p;
                 state = 2;
             }
             break;
         case 2:
-            if (SW_STRCASECT(p, pe - p, "\r\n")) {
-                length_if_modified_since = p - date_if_modified_since;
-                return string(date_if_modified_since, length_if_modified_since);
+            if (SW_STR_ISTARTS_WITH(p, pe - p, "\r\n")) {
+                return string(buffer, p - buffer);
             }
             break;
         default:
@@ -998,7 +1083,7 @@ string Request::get_date_if_modified_since() {
         }
     }
 
-    return string("");
+    return string();
 }
 
 int get_method(const char *method_str, size_t method_len) {
@@ -1051,7 +1136,7 @@ ssize_t get_package_length(const Protocol *protocol, Socket *socket, PacketLengt
 uint8_t get_package_length_size(Socket *socket) {
     Connection *conn = (Connection *) socket->object;
     if (conn->websocket_status >= websocket::STATUS_HANDSHAKE) {
-        return SW_WEBSOCKET_HEADER_LEN + SW_WEBSOCKET_MASK_LEN + sizeof(uint64_t);
+        return SW_WEBSOCKET_MESSAGE_HEADER_SIZE;
     } else if (conn->http2_stream) {
         return SW_HTTP2_FRAME_HEADER_SIZE;
     } else {

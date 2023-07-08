@@ -93,7 +93,7 @@ bool BaseFactory::end(SessionId session_id, int flags) {
 
     Session *session = server_->get_session(session_id);
     if (!session->fd) {
-        swoole_error_log(SW_LOG_NOTICE,
+        swoole_error_log(SW_LOG_TRACE,
                          SW_ERROR_SESSION_NOT_EXIST,
                          "failed to close connection, session#%ld does not exist",
                          session_id);
@@ -185,7 +185,7 @@ bool BaseFactory::finish(SendData *data) {
             size_t __len = sizeof(proxy_msg.info) + proxy_msg.info.len;
             return worker->pipe_master->send_async((const char *) &proxy_msg, __len);
         } else {
-            swoole_warning("unkown event type[%d]", data->info.type);
+            swoole_warning("unknown event type[%d]", data->info.type);
             return false;
         }
         return true;
