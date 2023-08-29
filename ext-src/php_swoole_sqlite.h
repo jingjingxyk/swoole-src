@@ -24,11 +24,17 @@
 BEGIN_EXTERN_C()
 
 #include "ext/pdo/php_pdo_driver.h"
+
+#if defined(HAS_PDO_SQLITE)
+#include "ext/pdo_sqlite/php_pdo_sqlite_int.h"
+#else
 #if PHP_VERSION_ID >= 80100
 #include "thirdparty/php81/pdo_sqlite/php_pdo_sqlite_int.h"
 #else
 #include "thirdparty/php80/pdo_sqlite/php_pdo_sqlite_int.h"
-#endif
+#endif /* PHP_VERSION_ID > 80100 */
+#endif /* defined(HAS_PDO_SQLITE)  */
+
 
 extern const pdo_driver_t swoole_pdo_sqlite_driver;
 void swoole_sqlite_set_blocking(bool blocking);
