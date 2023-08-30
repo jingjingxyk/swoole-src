@@ -25,7 +25,7 @@
 BEGIN_EXTERN_C()
 
 #include "ext/pdo/php_pdo_driver.h"
-#if defined(HAS_PDO_ODBC)
+#if defined(SW_HAS_NATIVE_PDO_OCI)
 #include "ext/pdo_oci/php_pdo_oci_int.h"
 #else
 #if PHP_VERSION_ID >= 80100
@@ -33,7 +33,7 @@ BEGIN_EXTERN_C()
 #else
 #include "thirdparty/php80/pdo_oci/php_pdo_oci_int.h"
 #endif /* PHP_VERSION_ID > 80100 */
-#endif /* defined(HAS_PDO_ODBC) */
+#endif /* defined(SW_HAS_NATIVE_PDO_OCI) */
 
 
 extern const pdo_driver_t swoole_pdo_oci_driver;

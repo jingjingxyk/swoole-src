@@ -21,7 +21,7 @@
 #include "swoole_coroutine_socket.h"
 
 #ifdef SW_USE_PGSQL
-#if defined(HAS_PDO_pgsql)
+#if defined(SW_HAS_NATIVE_PDO_PGSQL)
 #include "ext/pdo_pgsql/php_pdo_pgsql_int.h"
 #else
 #if PHP_VERSION_ID > 80100
@@ -29,7 +29,7 @@
 #else
 #include "thirdparty/php80/pdo_pgsql/php_pdo_pgsql_int.h"
 #endif /* PHP_VERSION_ID > 80100 */
-#endif /* defined(HAS_PDO_pgsql) */
+#endif /* defined(SW_HAS_NATIVE_PDO_PGSQL) */
 
 
 using swoole::coroutine::Socket;

@@ -504,6 +504,10 @@ EOF
         PHP_EVAL_LIBLINE($LIBPQ_LIBS, SWOOLE_SHARED_LIBADD)
 
         AC_DEFINE(SW_USE_PGSQL, 1, [do we enable postgresql coro support])
+
+        if test "$PHP_PDO_PGSQL" != "no"; then
+            AC_DEFINE(SW_HAS_NATIVE_PDO_PGSQL, 1, [use native pdo_pgsql driver])
+        fi
     fi
 
     dnl pgsql end
@@ -623,6 +627,10 @@ EOF
 	  ], $PDO_ODBC_LDFLAGS)
 
     	AC_DEFINE(SW_USE_ODBC, 1, [do we enable swoole-odbc coro support])
+
+        if test "$PHP_PDO_ODBC" != "no"; then
+            AC_DEFINE(SW_HAS_NATIVE_PDO_ODBC, 1, [use native pdo_odbc driver])
+        fi
 	fi
 
     dnl odbc end
@@ -822,6 +830,9 @@ EOF
         PHP_CHECK_PDO_INCLUDES
         AC_DEFINE_UNQUOTED(SWOOLE_PDO_OCI_CLIENT_VERSION, "$PDO_OCI_VERSION", [ ])
         AC_DEFINE(SW_USE_ORACLE, 1, [do we enable oracle coro support])
+        if test "$PHP_PDO_OCI" != "no"; then
+            AC_DEFINE(SW_HAS_NATIVE_PDO_OCI, 1, [use native pdo_oci driver])
+        fi
     fi
     dnl SWOOLE_ORACLE stop
 
@@ -854,6 +865,9 @@ EOF
         ], [], [$SWOOLE_SHARED_LIBADD])
 
         AC_DEFINE(SW_USE_SQLITE, 1, [do we enable sqlite coro support])
+        if test "$PHP_PDO_SQLITE" != "no"; then
+            AC_DEFINE(SW_HAS_NATIVE_PDO_SQLITE, 1, [use native pdo_sqlite driver])
+        fi
     fi
     dnl sqlite stop
 
@@ -1138,7 +1152,7 @@ EOF
 	        thirdparty/nghttp2/nghttp2_hd_huffman_data.c"
 	fi
 
-	if test "$PHP_SWOOLE_PGSQL" != "no"; then
+	if [ test "$PHP_SWOOLE_PGSQL" != "no" ] && [ test "$PHP_PDO_PGSQL" = "no" ] ; then
 	    swoole_source_file="$swoole_source_file \
 	        thirdparty/php80/pdo_pgsql/pgsql_driver.c \
 	        thirdparty/php80/pdo_pgsql/pgsql_statement.c \
@@ -1146,7 +1160,7 @@ EOF
 	        thirdparty/php81/pdo_pgsql/pgsql_statement.c"
 	fi
 
-	if test "$PHP_SWOOLE_ORACLE" != "no"; then
+	if [ test "$PHP_SWOOLE_ORACLE" != "no" ] && [ test "$PHP_PDO_OCI" = "no" ]; then
         swoole_source_file="$swoole_source_file \
             thirdparty/php80/pdo_oci/oci_driver.c \
             thirdparty/php80/pdo_oci/oci_statement.c \
@@ -1154,7 +1168,7 @@ EOF
             thirdparty/php81/pdo_oci/oci_statement.c"
     fi
 
-	if test "$PHP_SWOOLE_ODBC" != "no"; then
+	if [ test "$PHP_SWOOLE_ODBC" != "no" ] && [ test "$PHP_PDO_ODBC" = "no" ]; then
 	    swoole_source_file="$swoole_source_file \
 	        thirdparty/php80/pdo_odbc/odbc_driver.c \
 	        thirdparty/php80/pdo_odbc/odbc_stmt.c \
@@ -1162,7 +1176,7 @@ EOF
 	        thirdparty/php81/pdo_odbc/odbc_stmt.c"
 	fi
 
-	if test "$PHP_SWOOLE_SQLITE" != "no"; then
+	if [ test "$PHP_SWOOLE_SQLITE" != "no" ] && [ test "$PHP_PDO_SQLITE" = "no" ]; then
         swoole_source_file="$swoole_source_file \
             thirdparty/php80/pdo_sqlite/sqlite_driver.c \
             thirdparty/php80/pdo_sqlite/sqlite_statement.c \
