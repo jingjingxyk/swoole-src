@@ -661,39 +661,63 @@ EOF
       LIBS="$LIBS $PDO_ODBC_LDFLAGS"
 
       AC_LINK_IFELSE(
-        [AC_LANG_PROGRAM(
-           [[#include <sql.h>
-             #include <sqlext.h>]],
-           [[
-             SQLLEN ind = 0;
-             char buf[1];
-             SQLBindCol((SQLHSTMT)0, (SQLUSMALLINT)1, (SQLSMALLINT)SQL_C_CHAR,
-                        (SQLPOINTER)buf, (SQLLEN)sizeof(buf), &ind);
-             return 0;
-           ]])],
+        [
+           AC_LANG_PROGRAM(
+               [
+                  [
+                      #include <sql.h>
+                      #include <sqlext.h>
+                  ]
+               ],
+               [
+                  [
+                     SQLLEN ind = 0;
+                     char buf[1];
+                     SQLBindCol((SQLHSTMT)0, (SQLUSMALLINT)1, (SQLSMALLINT)SQL_C_CHAR,
+                                (SQLPOINTER)buf, (SQLLEN)sizeof(buf), &ind);
+                     return 0;
+                    ]
+               ]
+           )
+        ],
         [
           dnl And now check for an ODBC 3.0 function to assert that they are *good*
           dnl libraries.
           AC_LINK_IFELSE(
-            [AC_LANG_PROGRAM(
-               [[#include <sql.h>
-                 #include <sqlext.h>]],
-               [[
-                 SQLHANDLE out = SQL_NULL_HANDLE;
-                 SQLAllocHandle((SQLSMALLINT)SQL_HANDLE_ENV,
-                                (SQLHANDLE)SQL_NULL_HANDLE, &out);
-                 return 0;
-               ]])],
+            [
+                AC_LANG_PROGRAM(
+                   [
+                       [
+                            #include <sql.h>
+                            #include <sqlext.h>
+                       ]
+                   ],
+                   [
+                       [
+                         SQLHANDLE out = SQL_NULL_HANDLE;
+                         SQLAllocHandle((SQLSMALLINT)SQL_HANDLE_ENV,
+                                        (SQLHANDLE)SQL_NULL_HANDLE, &out);
+                         return 0;
+                       ]
+                   ]
+               )
+            ],
             [],
-            [AC_MSG_ERROR([
+            [
+                AC_MSG_ERROR(
+                [
     Your ODBC library does not appear to be ODBC 3 compatible.
     You should consider using iODBC or unixODBC instead, and loading your
     libraries as a driver in that environment; it will emulate the
     functions required for PDO support.
-    ])]
+                ]
+                )
+            ]
           )
         ],
-        [AC_MSG_ERROR([Your ODBC library does not exist or there was an error. Check config.log for more information])]
+        [
+            AC_MSG_ERROR([Your ODBC library does not exist or there was an error. Check config.log for more information])
+        ]
     )
 
       LIBS="$SAVE_LIBS"
