@@ -673,10 +673,16 @@ EOF
                   [
                      SQLLEN ind = 0;
                      char buf[1];
-                     SQLBindCol((SQLHSTMT)0, (SQLUSMALLINT)1, (SQLSMALLINT)SQL_C_CHAR,
-                                (SQLPOINTER)buf, (SQLLEN)sizeof(buf), &ind);
+                     SQLBindCol(
+                                (SQLHSTMT)0,
+                                (SQLUSMALLINT)1,
+                                (SQLSMALLINT)SQL_C_CHAR,
+                                (SQLPOINTER)buf,
+                                (SQLLEN)sizeof(buf),
+                                &ind
+                                );
                      return 0;
-                    ]
+                  ]
                ]
            )
         ],
@@ -695,8 +701,11 @@ EOF
                    [
                        [
                          SQLHANDLE out = SQL_NULL_HANDLE;
-                         SQLAllocHandle((SQLSMALLINT)SQL_HANDLE_ENV,
-                                        (SQLHANDLE)SQL_NULL_HANDLE, &out);
+                         SQLAllocHandle(
+                                        (SQLSMALLINT)SQL_HANDLE_ENV,
+                                        (SQLHANDLE)SQL_NULL_HANDLE,
+                                        &out
+                                        );
                          return 0;
                        ]
                    ]
@@ -1084,7 +1093,7 @@ EOF
         PKG_CHECK_MODULES([URING], [liburing >= 2.0])
 
         AC_SWOOLE_HAVE_IOURING_STATX
-        
+
         KERNEL_MAJOR=`uname -r | awk -F '.' '{print $1}'`
         KERNEL_MINOR=`uname -r | awk -F '.' '{print $2}'`
 
@@ -1092,7 +1101,7 @@ EOF
             dnl IORING_OP_FTRUNCATE is available since 6.9
             AC_SWOOLE_HAVE_IOURING_FTRUNCATE
         fi
-        
+
         if (test $KERNEL_MAJOR -eq 6 && test $KERNEL_MINOR -ge 7); then
             dnl IORING_OP_FUTEX_WAKE/IORING_OP_FUTEX_WAIT is available since 6.7
             AC_SWOOLE_HAVE_IOURING_FUTEX
