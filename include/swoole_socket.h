@@ -17,9 +17,15 @@
 
 #pragma once
 
+#include "swoole.h"
+#include "swoole_ssl.h"
+#include "swoole_buffer.h"
+#include "swoole_file.h"
+
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/uio.h>
+#include <sys/poll.h>
 #include <netinet/in.h>
 #if defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
 #include <sys/types.h>
@@ -32,11 +38,6 @@
 #include <string>
 #include <vector>
 
-#include "swoole.h"
-#include "swoole_ssl.h"
-#include "swoole_buffer.h"
-#include "swoole_file.h"
-
 #ifndef SOCK_NONBLOCK
 #define SOCK_NONBLOCK O_NONBLOCK
 #endif
@@ -47,12 +48,7 @@
 #define s6_addr32 _S6_un._S6_u32
 #endif
 
-#ifdef __linux__
-#include <sys/sendfile.h>
-#define swoole_sendfile(out_fd, in_fd, offset, limit) sendfile(out_fd, in_fd, offset, limit)
-#else
 ssize_t swoole_sendfile(int out_fd, int in_fd, off_t *offset, size_t size);
-#endif
 
 enum {
     SW_BAD_SOCKET = -1,

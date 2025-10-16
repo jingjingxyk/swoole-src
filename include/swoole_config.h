@@ -76,6 +76,7 @@
 #endif
 #define SW_IPC_BUFFER_MAX_SIZE (64 * 1024)
 #define SW_IPC_BUFFER_SIZE (SW_IPC_MAX_SIZE - sizeof(swoole::DataHead))
+#define SW_IPC_MSG_MIN (2048 - sizeof(swoole::DataHead))
 // !!!End.-------------------------------------------------------------------
 
 #define SW_BUFFER_SIZE_STD 8192
@@ -106,8 +107,6 @@
 
 #define SW_MSGMAX 65536
 #define SW_MESSAGE_BOX_SIZE 65536
-
-#define SW_DGRAM_HEADER_SIZE 32
 
 /**
  * The maximum number of Reactor threads
@@ -188,7 +187,6 @@
 #define SW_HTTP_DEFAULT_CONTENT_TYPE "text/html"
 #define SW_HTTP_MAX_APPEND_DATA 16384
 
-// #define SW_HTTP_100_CONTINUE
 #define SW_HTTP_100_CONTINUE_PACKET "HTTP/1.1 100 Continue\r\n\r\n"
 #define SW_HTTP_BAD_REQUEST_PACKET "HTTP/1.1 400 Bad Request\r\n\r\n"
 #define SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET "HTTP/1.1 413 Request Entity Too Large\r\n\r\n"

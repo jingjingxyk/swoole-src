@@ -1,17 +1,18 @@
 --TEST--
-swoole_lock: test lock twice
+swoole_lock: lock timeout
 --SKIPIF--
-<?php require __DIR__ . '/../include/skipif.inc'; ?>
+<?php require __DIR__ . '/../include/skipif.inc';
+skip_if_not_defined('SWOOLE_SPINLOCK');
+?>
 --FILE--
 <?php
 require __DIR__ . '/../include/bootstrap.php';
 
-$lock = new Swoole\Lock();
+$lock = new Swoole\Lock(SWOOLE_SPINLOCK);
 var_dump($lock->lock());
 
-
 $start = microtime(true);
-$ret = $lock->lockwait(0.2);
+$ret = $lock->lock(LOCK_EX, 0.2);
 Assert::false($ret);
 $end = microtime(true);
 

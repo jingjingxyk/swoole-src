@@ -17,19 +17,19 @@
 
 #pragma once
 
-#include "swoole.h"
-
-#include <csignal>
-#include <unordered_map>
-#include <unordered_set>
-#include <queue>
-
 #include "swoole_signal.h"
 #include "swoole_lock.h"
 #include "swoole_pipe.h"
 #include "swoole_channel.h"
 #include "swoole_msg_queue.h"
 #include "swoole_message_bus.h"
+
+#include <sys/wait.h>
+
+#include <csignal>
+#include <unordered_map>
+#include <unordered_set>
+#include <queue>
 
 enum swWorkerStatus {
     SW_WORKER_BUSY = 1,
@@ -181,7 +181,6 @@ struct Worker {
     ssize_t send_pipe_message(const void *buf, size_t n, int flags) const;
     bool has_exceeded_max_request() const;
     void set_max_request(uint32_t max_request, uint32_t max_request_grace);
-    static void set_isolation(const std::string &group_, const std::string &user_, const std::string &chroot_);
     void report_error(const ExitStatus &exit_status);
     /**
      * Init global state for worker process.
@@ -249,6 +248,7 @@ struct ReloadTask {
     void add_workers(Worker *list, size_t n);
     void add_timeout_killer(int timeout);
     bool remove(pid_t pid);
+    void clear_queue();
 };
 
 struct ProcessPool {
@@ -402,7 +402,7 @@ struct ProcessPool {
     bool reload();
     void reopen_logger();
 
-    void rigger_read_message_event() {
+    void trigger_read_message_event() {
         read_message = true;
     }
 

@@ -21,6 +21,8 @@
 #include "swoole_util.h"
 #include "swoole_hash.h"
 
+#include "swoole_api.h"
+
 #include <cassert>
 
 using swoole::network::Address;
@@ -609,7 +611,7 @@ int Server::create_user_workers() {
  * [Master]
  */
 void Server::create_worker(Worker *worker) {
-    worker->lock = new Mutex(Mutex::PROCESS_SHARED);
+    worker->lock = new Mutex(true);
     if (worker->pipe_object) {
         store_pipe_fd(worker->pipe_object);
     }
@@ -1726,8 +1728,8 @@ int Server::add_worker(Worker *worker) {
     return worker->id;
 }
 
-int Server::add_hook(Server::HookType type, const Callback &func, int push_back) {
-    return swoole::hook_add(hooks, (int) type, func, push_back);
+void Server::add_hook(Server::HookType type, const Callback &func, int push_back) {
+    swoole::hook_add(hooks, (int) type, func, push_back);
 }
 
 bool Server::add_command(const std::string &name, int accepted_process_types, const Command::Handler &func) {

@@ -21,6 +21,7 @@
 #include "swoole_client.h"
 #include "swoole_mqtt.h"
 #include "swoole_redis.h"
+#include "swoole_ssl.h"
 
 using swoole::http_server::Request;
 using swoole::network::Address;
@@ -682,7 +683,6 @@ _parse:
         }
 
         if (buffer->length < request_length) {
-#ifdef SW_HTTP_100_CONTINUE
             // Expect: 100-continue
             if (request->has_expect_header()) {
                 _socket->send(SW_STRL(SW_HTTP_100_CONTINUE_PACKET), 0);
@@ -690,11 +690,10 @@ _parse:
                 swoole_trace_log(
                     SW_TRACE_SERVER,
                     "PostWait: request->content_length=%d, buffer->length=%zu, request->header_length=%d\n",
-                    request->content_length,
-                    buffer_->length,
-                    request->header_length);
+                    request->content_length_,
+					buffer->length,
+                    request->header_length_);
             }
-#endif
             goto _recv_data;
         }
     }
