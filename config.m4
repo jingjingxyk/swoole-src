@@ -661,39 +661,72 @@ EOF
       LIBS="$LIBS $PDO_ODBC_LDFLAGS"
 
       AC_LINK_IFELSE(
-        [AC_LANG_PROGRAM(
-           [[#include <sql.h>
-             #include <sqlext.h>]],
-           [[
-             SQLLEN ind = 0;
-             char buf[1];
-             SQLBindCol((SQLHSTMT)0, (SQLUSMALLINT)1, (SQLSMALLINT)SQL_C_CHAR,
-                        (SQLPOINTER)buf, (SQLLEN)sizeof(buf), &ind);
-             return 0;
-           ]])],
+        [
+           AC_LANG_PROGRAM(
+               [
+                  [
+                      #include <sql.h>
+                      #include <sqlext.h>
+                  ]
+               ],
+               [
+                  [
+                     SQLLEN ind = 0;
+                     char buf[1];
+                     SQLBindCol(
+                                (SQLHSTMT)0,
+                                (SQLUSMALLINT)1,
+                                (SQLSMALLINT)SQL_C_CHAR,
+                                (SQLPOINTER)buf,
+                                (SQLLEN)sizeof(buf),
+                                &ind
+                                );
+                     return 0;
+                  ]
+               ]
+           )
+        ],
         [
           dnl And now check for an ODBC 3.0 function to assert that they are *good*
           dnl libraries.
           AC_LINK_IFELSE(
-            [AC_LANG_PROGRAM(
-               [[#include <sql.h>
-                 #include <sqlext.h>]],
-               [[
-                 SQLHANDLE out = SQL_NULL_HANDLE;
-                 SQLAllocHandle((SQLSMALLINT)SQL_HANDLE_ENV,
-                                (SQLHANDLE)SQL_NULL_HANDLE, &out);
-                 return 0;
-               ]])],
+            [
+                AC_LANG_PROGRAM(
+                   [
+                       [
+                            #include <sql.h>
+                            #include <sqlext.h>
+                       ]
+                   ],
+                   [
+                       [
+                         SQLHANDLE out = SQL_NULL_HANDLE;
+                         SQLAllocHandle(
+                                        (SQLSMALLINT)SQL_HANDLE_ENV,
+                                        (SQLHANDLE)SQL_NULL_HANDLE,
+                                        &out
+                                        );
+                         return 0;
+                       ]
+                   ]
+               )
+            ],
             [],
-            [AC_MSG_ERROR([
+            [
+                AC_MSG_ERROR(
+                [
     Your ODBC library does not appear to be ODBC 3 compatible.
     You should consider using iODBC or unixODBC instead, and loading your
     libraries as a driver in that environment; it will emulate the
     functions required for PDO support.
-    ])]
+                ]
+                )
+            ]
           )
         ],
-        [AC_MSG_ERROR([Your ODBC library does not exist or there was an error. Check config.log for more information])]
+        [
+            AC_MSG_ERROR([Your ODBC library does not exist or there was an error. Check config.log for more information])
+        ]
     )
 
       LIBS="$SAVE_LIBS"
@@ -1060,7 +1093,7 @@ EOF
         PKG_CHECK_MODULES([URING], [liburing >= 2.0])
 
         AC_SWOOLE_HAVE_IOURING_STATX
-        
+
         KERNEL_MAJOR=`uname -r | awk -F '.' '{print $1}'`
         KERNEL_MINOR=`uname -r | awk -F '.' '{print $2}'`
 
@@ -1068,7 +1101,7 @@ EOF
             dnl IORING_OP_FTRUNCATE is available since 6.9
             AC_SWOOLE_HAVE_IOURING_FTRUNCATE
         fi
-        
+
         if (test $KERNEL_MAJOR -eq 6 && test $KERNEL_MINOR -ge 7); then
             dnl IORING_OP_FUTEX_WAKE/IORING_OP_FUTEX_WAIT is available since 6.7
             AC_SWOOLE_HAVE_IOURING_FUTEX

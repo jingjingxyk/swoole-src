@@ -50,7 +50,9 @@ static std::unordered_map<int, std::shared_ptr<Socket>> socket_map;
 static std::mutex socket_map_lock;
 
 #ifdef __APPLE__
-extern int fdatasync(int);
+extern "C" {
+    int fdatasync(int);
+};
 #endif
 
 static sw_inline bool is_no_coro() {
