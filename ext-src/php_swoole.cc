@@ -323,8 +323,8 @@ zend_object_handlers swoole_error_handlers;
 #ifdef ZTS
 ZEND_TSRMLS_CACHE_DEFINE()
 #endif
-ZEND_GET_MODULE(swoole)
 #endif
+ZEND_GET_MODULE(swoole)
 
 // clang-format off
 PHP_INI_BEGIN()
