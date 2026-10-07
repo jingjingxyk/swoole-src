@@ -43,8 +43,14 @@ extern "C" {
 }
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 extern zend_module_entry swoole_module_entry;
 #define phpext_swoole_ptr &swoole_module_entry
+#ifdef __cplusplus
+}
+#endif
 
 PHP_MINIT_FUNCTION(swoole);
 PHP_MSHUTDOWN_FUNCTION(swoole);
