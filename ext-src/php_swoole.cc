@@ -325,13 +325,7 @@ ZEND_TSRMLS_CACHE_DEFINE()
 #endif
 #endif
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 ZEND_GET_MODULE(swoole)
-#ifdef __cplusplus
-}
-#endif
 
 // clang-format off
 PHP_INI_BEGIN()
