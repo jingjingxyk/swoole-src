@@ -21,6 +21,8 @@ ARG_ENABLE("swoole-sqlite", "enable sqlite support", "no");
 ARG_ENABLE("swoole-odbc", "enable odbc support", "no");
 ARG_WITH("swoole-oracle", "enable oracle support", "no");
 ARG_WITH("nghttp2-dir", "dir of nghttp2", "no");
+ARG_WITH("cares-dir", "dir of cares", "no");
+ARG_WITH("pgsql-dir", "dir of pgsql", "no");
 
 if (PHP_SWOOLE != "no") {
 	// Calculate PHP version ID (e.g., PHP 8.4 -> 84, PHP 8.5 -> 85)
