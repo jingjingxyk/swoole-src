@@ -47,9 +47,6 @@ ListenPort::~ListenPort() {
         socket->free();
         socket = nullptr;
     }
-#ifdef SW_SUPPORT_DTLS
-    delete dtls_sessions;
-#endif
 }
 
 bool ListenPort::ssl_add_sni_cert(const std::string &name, const std::shared_ptr<SSLContext> &ctx) {
@@ -99,7 +96,8 @@ int ListenPort::ssl_server_sni_callback(SSL *ssl, int *al, void *arg) {
 
     auto *port = static_cast<ListenPort *>(SSL_get_ex_data(ssl, swoole_ssl_get_ex_port_index()));
 
-    if (port->sni_contexts.empty()) {
+    // TLS and DTLS must both bind the owning listener before the handshake.
+    if (!port || port->sni_contexts.empty()) {
         return SSL_TLSEXT_ERR_NOACK;
     }
 
@@ -115,13 +113,39 @@ int ListenPort::ssl_server_sni_callback(SSL *ssl, int *al, void *arg) {
 
 #ifdef SW_SUPPORT_DTLS
 dtls::Session *ListenPort::create_dtls_session(Socket *sock) const {
-    auto *session = new dtls::Session(sock, ssl_context);
+    std::unique_ptr<dtls::Session> session(new dtls::Session(sock, ssl_context));
     if (!session->init()) {
-        delete session;
         return nullptr;
     }
-    dtls_sessions->emplace(sock->get_fd(), session);
-    return session;
+    // Session::init() creates SSL directly. Bind the same listener metadata as
+    // ssl_create() before DTLSv1_listen()/SSL_accept() can invoke SNI callbacks.
+    if (SSL_set_ex_data(sock->ssl, swoole_ssl_get_ex_port_index(), const_cast<ListenPort *>(this)) == 0) {
+        swoole_warning("SSL_set_ex_data() failed");
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> guard(dtls_sessions_mutex);
+    const auto inserted = dtls_sessions->emplace(sock->get_fd(), std::move(session));
+    return inserted.second ? inserted.first->second.get() : nullptr;
+}
+
+dtls::Session *ListenPort::get_dtls_session(int fd) const {
+    std::lock_guard<std::mutex> guard(dtls_sessions_mutex);
+    const auto it = dtls_sessions->find(fd);
+    return it == dtls_sessions->end() ? nullptr : it->second.get();
+}
+
+void ListenPort::remove_dtls_session(int fd) const {
+    std::unique_ptr<dtls::Session> session;
+    do {
+        std::lock_guard<std::mutex> guard(dtls_sessions_mutex);
+        const auto it = dtls_sessions->find(fd);
+        if (it == dtls_sessions->end()) {
+            return;
+        }
+        session = std::move(it->second);
+        dtls_sessions->erase(it);
+    } while (0);
+    // Destroy SSL receive buffers after releasing the map mutex.
 }
 #endif
 
@@ -137,7 +161,7 @@ bool ListenPort::ssl_context_init() {
     if (is_dgram()) {
 #ifdef SW_SUPPORT_DTLS
         ssl_context->protocols = SW_SSL_DTLS;
-        dtls_sessions = new std::unordered_map<int, dtls::Session *>;
+        dtls_sessions = std::make_unique<DTLSSessionMap>();
 #else
         swoole_warning("DTLS support require openssl-1.1 or later");
         return false;
@@ -440,7 +464,7 @@ int ListenPort::readable_callback_http(Reactor *reactor, ListenPort *port, Event
     auto *serv = static_cast<Server *>(reactor->ptr);
     RecvData dispatch_data{};
 
-    if (conn->websocket_status >= websocket::STATUS_HANDSHAKE) {
+    if (conn->is_websocket_status_at_least(websocket::STATUS_HANDSHAKE)) {
         if (conn->http_upgrade == 0) {
             port->destroy_http_request(conn);
             conn->websocket_status = websocket::STATUS_ACTIVE;
@@ -468,6 +492,7 @@ int ListenPort::readable_callback_http(Reactor *reactor, ListenPort *port, Event
     }
 
     String *buffer = request->buffer_;
+    auto close_reason = ConnectionCloseReason::SOCKET_EVENT;
 
 _recv_data:
     ssize_t n = _socket->recv(buffer->str + buffer->length, buffer->size - buffer->length, 0);
@@ -487,19 +512,27 @@ _recv_data:
     if (n == 0) {
         if (false) {
         _bad_request:
+            close_reason = ConnectionCloseReason::PROTOCOL_ERROR;
             _socket->send(SW_STRL(SW_HTTP_BAD_REQUEST_PACKET), 0);
         }
         if (false) {
         _too_large:
+            close_reason = ConnectionCloseReason::PROTOCOL_ERROR;
             _socket->send(SW_STRL(SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET), 0);
         }
         if (false) {
         _unavailable:
+            close_reason = ConnectionCloseReason::PROTOCOL_ERROR;
             _socket->send(SW_STRL(SW_HTTP_SERVICE_UNAVAILABLE_PACKET), 0);
         }
     _close_fd:
         port->destroy_http_request(conn);
-        reactor->trigger_close_event(event);
+        if (close_reason == ConnectionCloseReason::SOCKET_EVENT) {
+            close_reason = _socket->recv_eof   ? ConnectionCloseReason::PEER_EOF
+                           : conn->close_errno ? ConnectionCloseReason::IO_ERROR
+                                               : ConnectionCloseReason::SOCKET_EVENT;
+        }
+        serv->request_close(reactor, conn, close_reason);
         return SW_OK;
     }
 
@@ -706,12 +739,12 @@ _parse:
             if (buffer->length == request->header_length_ && request->has_expect_header()) {
                 _socket->send(SW_STRL(SW_HTTP_100_CONTINUE_PACKET), 0);
             } else {
-                swoole_trace_log(
-                    SW_TRACE_SERVER,
-                    "PostWait: request->content_length=%" PRIu64 ", buffer->length=%zu, request->header_length=%d\n",
-                    request->content_length_,
-                    buffer->length,
-                    request->header_length_);
+                swoole_trace_log(SW_TRACE_SERVER,
+                                 "PostWait: request->content_length=%" PRIu64
+                                 ", buffer->length=%zu, request->header_length=%d\n",
+                                 request->content_length_,
+                                 buffer->length,
+                                 request->header_length_);
             }
             goto _recv_data;
         }
@@ -800,8 +833,7 @@ void ListenPort::close() {
             ssl_context.reset();
         }
 #ifdef SW_SUPPORT_DTLS
-        delete dtls_sessions;
-        dtls_sessions = nullptr;
+        dtls_sessions.reset();
 #endif
     }
 

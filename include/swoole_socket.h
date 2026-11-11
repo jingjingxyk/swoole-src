@@ -251,7 +251,6 @@ struct Socket {
      * the caller must explicitly handle this error.
      */
     uchar dont_restart : 1;
-    uchar close_notified : 1;
 
     // memory buffer size [user space]
     uint32_t buffer_size;
@@ -271,6 +270,8 @@ struct Socket {
     double read_timeout = default_read_timeout;
     double write_timeout = default_write_timeout;
 
+    // Monotonic milliseconds. Updated after successful I/O when the corresponding
+    // timer is enabled; recv_timer also enables send tracking for server idle detection.
     double last_received_time;
     double last_sent_time;
 

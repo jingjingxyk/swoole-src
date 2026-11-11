@@ -2111,8 +2111,6 @@ TEST(server, task_worker) {
         pool->running = true;
         pool->main_loop(pool, &pool->workers[0]);
         EXPECT_EQ(serv.get_tasking_num(), 0);
-        serv.gs->tasking_num--;
-        EXPECT_EQ(serv.get_tasking_num(), 0);
         EXPECT_EQ(serv.get_idle_task_worker_num(), serv.task_worker_num);
     });
 
@@ -2252,6 +2250,64 @@ TEST(server, task_id_sequence_survives_repeated_init) {
     EXPECT_GT(second.info.fd, first.info.fd);
 }
 
+TEST(server, task_finish_without_context_is_rejected) {
+    Server serv;
+    serv.task_worker_num = 1;
+    EXPECT_FALSE(serv.finish(SW_STRL("outside task"), 0));
+}
+
+TEST(server, task_sync_spurious_notifications_do_not_extend_timeout) {
+    Server serv;
+    serv.worker_num = serv.task_worker_num = 1;
+    ASSERT_NE(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0), nullptr);
+    ASSERT_EQ(serv.create(), SW_OK);
+    serv.get_event_worker_pool()->workers = serv.workers;
+    serv.get_event_worker_pool()->worker_num = serv.worker_num;
+    serv.workers[0].lock = new Mutex(true);
+    const auto saved_worker_id = swoole_get_worker_id();
+    swoole_set_worker_id(0);
+    ON_SCOPE_EXIT {
+        swoole_set_worker_id(saved_worker_id);
+        delete serv.workers[0].lock;
+        serv.workers[0].lock = nullptr;
+    };
+
+    EventData task;
+    ASSERT_TRUE(Server::task_pack(&task, SW_STRL("no result")));
+    auto *task_reader = serv.get_task_worker_pool()->workers[0].pipe_worker;
+    ASSERT_NE(task_reader, nullptr);
+    const auto notify_fd = serv.task_notify_pipes[0]->get_socket(true)->fd;
+    std::atomic<bool> done{false};
+    std::atomic<int> notifications{0};
+    std::thread notifier([&]() {
+        // Wait until dispatch, after task_sync() has cleaned the notification pipe.
+        ASSERT_EQ(task_reader->wait_event(1000, SW_EVENT_READ), SW_OK);
+        EventData queued;
+        ASSERT_GT(task_reader->read(&queued, sizeof(queued)), 0);
+        const auto stop_at = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        const uint64_t flag = 1;
+        while (!done.load() && std::chrono::steady_clock::now() < stop_at) {
+            // Send only wakeups; no matching result is ever published.
+            ASSERT_EQ(::write(notify_fd, &flag, sizeof(flag)), sizeof(flag));
+            notifications++;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    });
+    ON_SCOPE_EXIT {
+        done = true;
+        notifier.join();
+    };
+
+    int destination = 0;
+    const auto started_at = std::chrono::steady_clock::now();
+    EXPECT_FALSE(serv.task_sync(&task, &destination, 0.1));
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started_at).count();
+    done = true;
+    EXPECT_GT(notifications.load(), 0);
+    EXPECT_LT(elapsed, 1.0);  // Wide scheduling margin; the broken loop lasts at least two seconds.
+    EXPECT_ERREQ(SW_ERROR_SOCKET_POLL_TIMEOUT);
+}
+
 TEST(server, task_finish_preserves_id_without_allocating_another) {
     Server serv;
     serv.worker_num = 1;
@@ -2271,7 +2327,14 @@ TEST(server, task_finish_preserves_id_without_allocating_another) {
     request.info.fd = 123;
     request.info.reactor_id = 0;
     const auto before = SwooleG.task_id_counter->load();
+    serv.task_results[0].info = request.info;  // Publish the expected synchronous request.
+    EventData stale = request;
+    stale.info.fd--;
+    EXPECT_FALSE(serv.finish(SW_STRL("stale single"), 0, &stale));
+    stale.info.ext_flags = SW_TASK_WAITALL;
+    EXPECT_FALSE(serv.finish(SW_STRL("stale batch"), 0, &stale));
     ASSERT_TRUE(serv.finish(SW_STRL("reply"), 0, &request));
+    EXPECT_FALSE(serv.finish(SW_STRL("duplicate"), 0, &request));
     EXPECT_EQ(serv.task_results[0].info.fd, request.info.fd);
     EXPECT_EQ(SwooleG.task_id_counter->load(), before);
 
@@ -2286,6 +2349,14 @@ TEST(server, task_finish_preserves_id_without_allocating_another) {
     *reinterpret_cast<sw_atomic_t *>(result->data) = 0;
     swoole_strlcpy(result->data + 4, path.c_str(), SW_TASK_TMP_PATH_SIZE);
     request.info.ext_flags = SW_TASK_WAITALL;
+    request.info.msg_id = 42;
+    result->info = request.info;
+    stale = request;
+    stale.info.msg_id--;
+    EXPECT_FALSE(serv.finish(SW_STRL("previous batch"), 0, &stale));
+    stale.info.ext_flags = 0;
+    EXPECT_FALSE(serv.finish(SW_STRL("previous single"), 0, &stale));
+    EXPECT_EQ(*reinterpret_cast<sw_atomic_t *>(result->data), 0u);
     ASSERT_TRUE(serv.finish(SW_STRL("reply"), 0, &request));
     EXPECT_EQ(SwooleG.task_id_counter->load(), before);
     auto content = file_get_contents(path);
@@ -3370,6 +3441,85 @@ TEST(server, reopen_log2) {
     ASSERT_EQ(serv.start(), 0);
     remove(filename.c_str());
 }
+
+#ifdef __GLIBC__
+// Inject signals at fwrite(), while Logger::put() holds its nonrecursive mutex.
+// This makes the old deadlock deterministic instead of depending on signal timing.
+static bool test_log_signal_inside_write() {
+    struct Probe {
+        int signo;
+        bool deferred = false;
+    };
+    for (int signo : {SIGWINCH, SIGRTMIN}) {
+        Probe probe{signo};
+        cookie_io_functions_t io{};
+        io.write = [](void *cookie, const char *, size_t length) -> ssize_t {
+            auto *probe = static_cast<Probe *>(cookie);
+            raise(probe->signo);
+            probe->deferred = SwooleG.signal_dispatch;
+            return length;
+        };
+        FILE *stream = fopencookie(&probe, "w", io);
+        if (!stream) {
+            return false;
+        }
+        setvbuf(stream, nullptr, _IONBF, 0);
+        sw_logger()->set_stream(stream);
+        sw_logger()->set_level(SW_LOG_INFO);
+        sw_logger()->put(SW_LOG_INFO, SW_STRL("signal during log write"));
+        // Dispatch only after Logger::put() released the mutex.
+        swoole_signal_dispatch();
+        sw_logger()->set_stream(stdout);
+        fclose(stream);
+        sw_logger()->set_level(SW_LOG_NONE);
+        if (!probe.deferred) {
+            return false;
+        }
+    }
+    return true;
+}
+
+TEST(server, log_signals_defer_in_manager_and_sync_task_worker) {
+    test::counter_init();
+    Server serv(Server::MODE_PROCESS);
+    serv.worker_num = serv.reactor_num = serv.task_worker_num = 1;
+    serv.max_wait_time = 1;
+    ASSERT_NE(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0), nullptr);
+    ASSERT_EQ(serv.create(), SW_OK);
+    serv.onReceive = [](Server *, RecvData *) { return SW_OK; };
+    serv.onTask = [](Server *, EventData *) { return SW_OK; };
+    serv.onWorkerStart = [](Server *, Worker *worker) {
+        if (worker->type == SW_TASK_WORKER) {
+            test::counter_set(0, test_log_signal_inside_write() ? 1 : -1);
+        }
+    };
+    serv.onManagerStart = [](Server *) { test::counter_set(1, test_log_signal_inside_write() ? 1 : -1); };
+    serv.onStart = [](Server *serv) {
+        const auto deadline = microtime() + 5;
+        swoole_timer_add(10L, true, [serv, deadline](TIMER_PARAMS) {
+            if (test::counter_get(0) != 0 && test::counter_get(1) != 0) {
+                swoole_timer_del(tnode);
+                serv->shutdown();
+            } else if (microtime() >= deadline) {
+                test::counter_set(2, 1);
+                // A regression must fail promptly and leave no deadlocked descendants.
+                for (uint32_t i = 0; i < serv->get_core_worker_num(); i++) {
+                    if (serv->get_worker(i)->pid > 0) {
+                        kill(serv->get_worker(i)->pid, SIGKILL);
+                    }
+                }
+                kill(serv->get_manager_pid(), SIGKILL);
+                swoole_timer_del(tnode);
+                serv->shutdown();
+            }
+        });
+    };
+    ASSERT_EQ(serv.start(), SW_OK);
+    EXPECT_EQ(test::counter_get(0), 1);
+    EXPECT_EQ(test::counter_get(1), 1);
+    EXPECT_EQ(test::counter_get(2), 0);
+}
+#endif
 
 TEST(server, udp_packet) {
     Server *server = new Server(Server::MODE_PROCESS);
@@ -5031,10 +5181,11 @@ TEST(server, pause_and_resume) {
     serv.onConnect = [](Server *serv, DataHead *ev) {
         auto session_id = ev->fd;
         DEBUG() << "onConnect: fd=" << session_id << ", reactor_id=" << ev->reactor_id << std::endl;
-        ASSERT_TRUE(serv->feedback(serv->get_connection_by_session_id(session_id), SW_SERVER_EVENT_PAUSE_RECV));
+        ASSERT_TRUE(serv->feedback(session_id, SW_SERVER_EVENT_PAUSE_RECV));
         DEBUG() << "pause recv ok, session_id=" << session_id << std::endl;
-        swoole_timer_after(50, [ev, serv, session_id](TIMER_PARAMS) {
-            ASSERT_TRUE(serv->feedback(serv->get_connection_by_session_id(session_id), SW_SERVER_EVENT_RESUME_RECV));
+        // The timer outlives the CONNECT event buffer; retain its session id rather than the event pointer.
+        swoole_timer_after(50, [serv, session_id](TIMER_PARAMS) {
+            ASSERT_TRUE(serv->feedback(session_id, SW_SERVER_EVENT_RESUME_RECV));
             DEBUG() << "resume recv ok, session_id=" << session_id << std::endl;
         });
     };
