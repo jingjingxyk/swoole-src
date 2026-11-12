@@ -40,11 +40,6 @@ check_docker_dependency(){
 create_docker_images(){
   arch=`uname -m`
   if [ "$arch" = "aarch64" ]; then
-      echo "\n 📢 create golang-h2demo aarch64 docker image"
-      git clone https://github.com/swoole/golang-h2demo.git
-      apt install -y golang
-      cd ./golang-h2demo && GOOS=linux GOARCH=arm64 go build -o h2demo . && docker build . -t phpswoole/golang-h2demo && cd -
-
       echo "\n 📢 create ${PHP_VERSION} aarch64 docker image"
       git clone https://github.com/swoole/php-docker.git
       cd php-docker

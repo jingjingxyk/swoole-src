@@ -317,11 +317,15 @@ std::vector<std::string> dns_lookup_impl_with_socket(const char *domain, int fam
         return result;
     }
 
-    static SW_THREAD_LOCAL uint16_t dns_request_id = 1;
-    int _request_id = dns_request_id++;
-    if (dns_request_id == 65535) {
-    	dns_request_id = 1;
+    // The counter guarantees distinct ids for 65535 consecutive queries; the random starting point keeps the
+    // first id unpredictable. The connected socket below already restricts who may answer.
+    static SW_THREAD_LOCAL uint16_t dns_request_id = 0;
+    if (dns_request_id == 0) {
+        const int seed = swoole_system_random(1, UINT16_MAX);
+        dns_request_id = static_cast<uint16_t>(seed > 0 ? seed : swoole_rand(1, UINT16_MAX));
     }
+    const uint16_t _request_id = dns_request_id;
+    dns_request_id = dns_request_id == UINT16_MAX ? 1 : dns_request_id + 1;
 
     header = reinterpret_cast<RecordHeader *>(packet);
     header->id = htons(_request_id);
@@ -365,7 +369,9 @@ std::vector<std::string> dns_lookup_impl_with_socket(const char *domain, int fam
     if (timeout > 0) {
         _sock.set_timeout(timeout);
     }
-    if (!_sock.sendto(SwooleG.dns_server.host, SwooleG.dns_server.port, (char *) packet, steps)) {
+    // Connecting the UDP socket makes the kernel drop replies from any other source address.
+    if (!_sock.connect(SwooleG.dns_server.host, SwooleG.dns_server.port) ||
+        _sock.send(packet, steps) != static_cast<ssize_t>(steps)) {
         swoole_set_last_error(SW_ERROR_DNSLOOKUP_RESOLVE_FAILED);
         return result;
     }
@@ -387,7 +393,7 @@ std::vector<std::string> dns_lookup_impl_with_socket(const char *domain, int fam
 
     header = reinterpret_cast<RecordHeader *>(packet);
     int request_id = ntohs(header->id);
-    if (sw_unlikely(request_id != _request_id)) {
+    if (sw_unlikely(request_id != _request_id || !header->qr)) {
         swoole_set_last_error(SW_ERROR_DNSLOOKUP_RESOLVE_FAILED);
         return result;
     }
@@ -582,7 +588,7 @@ struct ResolvContext {
     bool completed;
     Coroutine *co;
     std::shared_ptr<bool> defer_task_cancelled;
-    std::unordered_map<int, network::Socket *> sockets;
+    std::unordered_map<ares_socket_t, network::Socket *> sockets;
     std::vector<std::string> result;
 };
 
@@ -601,6 +607,16 @@ std::vector<std::string> dns_lookup_impl_with_cares(const char *domain, int fami
             ares_process_fd(ctx->channel, ARES_SOCKET_BAD, event->fd);
             return SW_OK;
         });
+        // Without an explicit error handler a Server falls back to its default_error_handler, which only knows
+        // client connections: it fails for a c-ares socket without removing it from epoll, so the level-triggered
+        // EPOLLERR (e.g. ECONNREFUSED from an unreachable resolver) makes epoll_wait() return immediately forever.
+        // Let c-ares consume the socket error instead.
+        swoole_event_set_handler(SW_FD_CARES, SW_EVENT_ERROR, [](Reactor *reactor, Event *event) -> int {
+            auto ctx = static_cast<ResolvContext *>(event->socket->object);
+            swoole_trace_log(SW_TRACE_CARES, "[event callback] error event, fd=%d", event->socket->fd);
+            ares_process_fd(ctx->channel, event->fd, ARES_SOCKET_BAD);
+            return SW_OK;
+        });
         sw_reactor()->add_destroy_callback([](void *_data) { ares_library_cleanup(); }, nullptr);
     }
 
@@ -615,7 +631,7 @@ std::vector<std::string> dns_lookup_impl_with_cares(const char *domain, int fami
     ctx.ares_opts.timeout = timeout * 1000;
     ctx.ares_opts.tries = SwooleG.dns_tries;
     ctx.ares_opts.sock_state_cb_data = &ctx;
-    ctx.ares_opts.sock_state_cb = [](void *arg, int fd, int readable, int writable) {
+    ctx.ares_opts.sock_state_cb = [](void *arg, ares_socket_t fd, int readable, int writable) {
         auto ctx = static_cast<ResolvContext *>(arg);
         int events = 0;
         if (readable) {

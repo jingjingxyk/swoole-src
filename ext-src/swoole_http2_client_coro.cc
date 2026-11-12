@@ -91,6 +91,8 @@ class Client {
 
     std::unordered_map<uint32_t, Stream *> streams;
     std::queue<zend_string *> send_queue;
+    // The HEADERS frame being sent, which send() may still be writing while its coroutine waits.
+    String header_frame;
 
     /* safety zval */
     zval _zobject;
@@ -202,14 +204,20 @@ class Client {
         }
     }
 
-    bool send(const char *buf, size_t len) {
+    // Checked before a request or DATA write starts: dropping part of one would break the connection's HPACK state or
+    // leave the stream unfinished.
+    bool check_send_queue() const {
+        if (socket_->has_bound(SW_EVENT_WRITE) && send_queue.size() > remote_settings.max_concurrent_streams) {
+            socket_->errCode = SW_ERROR_QUEUE_FULL;
+            socket_->errMsg = "the send queue is full, try again later";
+            io_error();
+            return false;
+        }
+        return true;
+    }
+
+    bool send(const char *buf, size_t len, bool flush = true) {
         if (socket_->has_bound(SW_EVENT_WRITE)) {
-            if (send_queue.size() > remote_settings.max_concurrent_streams) {
-                socket_->errCode = SW_ERROR_QUEUE_FULL;
-                socket_->errMsg = "the send queue is full, try again later";
-                io_error();
-                return false;
-            }
             send_queue.push(zend_string_init(buf, len, false));
             return true;
         }
@@ -217,7 +225,7 @@ class Client {
             io_error();
             return false;
         }
-        while (!send_queue.empty()) {
+        while (flush && !send_queue.empty()) {
             zend_string *frame = send_queue.front();
             if (sw_unlikely(socket_->send_all(frame->val, frame->len) != (ssize_t) frame->len)) {
                 io_error();
@@ -610,11 +618,16 @@ ReturnCode Client::parse_frame(zval *return_value, bool pipeline_read) {
     }
     case SW_HTTP2_TYPE_PING: {
         swoole_http2_frame_trace_log("ping");
+        if (length != SW_HTTP2_FRAME_PING_PAYLOAD_SIZE) {
+            // close() records its own error when it has to wait for another coroutine
+            close();
+            update_error_properties(SW_HTTP2_ERROR_FRAME_SIZE_ERROR, "invalid PING frame length");
+            return SW_CLOSE;
+        }
         if (!(flags & SW_HTTP2_FLAG_ACK)) {
             Http2::set_frame_header(
                 frame, SW_HTTP2_TYPE_PING, SW_HTTP2_FRAME_PING_PAYLOAD_SIZE, SW_HTTP2_FLAG_ACK, _stream_id);
-            memcpy(
-                frame + SW_HTTP2_FRAME_HEADER_SIZE, buf + SW_HTTP2_FRAME_HEADER_SIZE, SW_HTTP2_FRAME_PING_PAYLOAD_SIZE);
+            memcpy(frame + SW_HTTP2_FRAME_HEADER_SIZE, buf, SW_HTTP2_FRAME_PING_PAYLOAD_SIZE);
             if (!send(frame, SW_HTTP2_FRAME_HEADER_SIZE + SW_HTTP2_FRAME_PING_PAYLOAD_SIZE)) {
                 return SW_ERROR;
             }
@@ -622,6 +635,12 @@ ReturnCode Client::parse_frame(zval *return_value, bool pipeline_read) {
         return SW_CONTINUE;
     }
     case SW_HTTP2_TYPE_GOAWAY: {
+        if (length < SW_HTTP2_GOAWAY_SIZE) {
+            // close() records its own error when it has to wait for another coroutine
+            close();
+            update_error_properties(SW_HTTP2_ERROR_FRAME_SIZE_ERROR, "invalid GOAWAY frame length");
+            return SW_CLOSE;
+        }
         uint32_t server_last_stream_id = ntohl(*(uint32_t *) (buf));
         buf += 4;
         uint32_t value = ntohl(*(uint32_t *) (buf));
@@ -1130,7 +1149,7 @@ Stream *Client::create_stream(uint32_t _stream_id, uint8_t flags) {
  * called in write channel
  */
 bool Client::send_ping_frame() {
-    char frame[SW_HTTP2_FRAME_HEADER_SIZE + SW_HTTP2_FRAME_PING_PAYLOAD_SIZE];
+    char frame[SW_HTTP2_FRAME_HEADER_SIZE + SW_HTTP2_FRAME_PING_PAYLOAD_SIZE] = {};
     Http2::set_frame_header(frame, SW_HTTP2_TYPE_PING, SW_HTTP2_FRAME_PING_PAYLOAD_SIZE, SW_HTTP2_FLAG_NONE, 0);
     swoole_http2_send_trace_log("[" SW_ECHO_CYAN "]", "PING");
     return send(frame, SW_HTTP2_FRAME_HEADER_SIZE + SW_HTTP2_FRAME_PING_PAYLOAD_SIZE);
@@ -1161,7 +1180,8 @@ bool Client::send_data(uint32_t _stream_id, const char *p, size_t len, int flag)
                          _stream_id,
                          send_flag,
                          send_len);
-        if (!send(header, SW_HTTP2_FRAME_HEADER_SIZE)) {
+        // Frames queued while the header waits must not be sent before its payload.
+        if (!send(header, SW_HTTP2_FRAME_HEADER_SIZE, false)) {
             return false;
         }
         if (!send(p, send_len)) {
@@ -1191,10 +1211,16 @@ uint32_t Client::send_request(zval *zrequest) {
             zheaders, ZEND_STRL("content-type"), (char *) ZEND_STRL("application/x-www-form-urlencoded"));
     }
 
+    if (!check_send_queue()) {
+        return 0;
+    }
+
     /**
      * send headers
      */
-    String *buffer = sw_tg_buffer();
+    // While another write waits, send() queues a copy, so the shared buffer is enough. Otherwise send() may wait with
+    // the frame unsent, and other coroutines can reuse the shared buffer meanwhile.
+    String *buffer = socket_->has_bound(SW_EVENT_WRITE) ? sw_tg_buffer() : &header_frame;
     ssize_t bytes = build_header(zobject, zrequest, buffer);
 
     if (bytes < 0) {
@@ -1209,18 +1235,23 @@ uint32_t Client::send_request(zval *zrequest) {
         flags |= SW_HTTP2_STREAM_USE_PIPELINE_READ;
     }
 
-    auto stream = create_stream(stream_id, flags);
+    // Reserve the id before sending: other coroutines can send while send() waits. A concurrent recv() can also delete
+    // the stream meanwhile, so only its id is used after this.
+    uint32_t _stream_id = stream_id;
+    bool pipeline = flags & SW_HTTP2_STREAM_PIPELINE_REQUEST;
+    create_stream(_stream_id, flags);
+    stream_id += 2;
 
     flags = SW_HTTP2_FLAG_END_HEADERS;
 
-    if (is_data_empty && !(stream->flags & SW_HTTP2_STREAM_PIPELINE_REQUEST)) {
+    if (is_data_empty && !pipeline) {
         flags |= SW_HTTP2_FLAG_END_STREAM;
     }
 
-    Http2::set_frame_header(buffer->str, SW_HTTP2_TYPE_HEADERS, bytes, flags, stream->stream_id);
+    Http2::set_frame_header(buffer->str, SW_HTTP2_TYPE_HEADERS, bytes, flags, _stream_id);
 
     swoole_http2_send_trace_log(
-        "[" SW_ECHO_GREEN ", STREAM#%d] length=%zd", Http2::get_type(SW_HTTP2_TYPE_HEADERS), stream->stream_id, bytes);
+        "[" SW_ECHO_GREEN ", STREAM#%d] length=%zd", Http2::get_type(SW_HTTP2_TYPE_HEADERS), _stream_id, bytes);
     if (!send(buffer->str, buffer->length)) {
         return 0;
     }
@@ -1234,7 +1265,7 @@ uint32_t Client::send_request(zval *zrequest) {
         smart_str formstr_s = {};
         zend::String str_zpost_data;
 
-        int flag = (stream->flags & SW_HTTP2_STREAM_PIPELINE_REQUEST) ? 0 : SW_HTTP2_FLAG_END_STREAM;
+        int flag = pipeline ? 0 : SW_HTTP2_FLAG_END_STREAM;
         if (ZVAL_IS_ARRAY(zdata)) {
             p = php_swoole_http_build_query(zdata, &len, &formstr_s);
             if (p == nullptr) {
@@ -1247,12 +1278,10 @@ uint32_t Client::send_request(zval *zrequest) {
             len = str_zpost_data.len();
         }
 
-        swoole_http2_send_trace_log("[" SW_ECHO_GREEN ", END, STREAM#%d] length=%zu",
-                                    Http2::get_type(SW_HTTP2_TYPE_DATA),
-                                    stream->stream_id,
-                                    len);
+        swoole_http2_send_trace_log(
+            "[" SW_ECHO_GREEN ", END, STREAM#%d] length=%zu", Http2::get_type(SW_HTTP2_TYPE_DATA), _stream_id, len);
 
-        if (!send_data(stream->stream_id, p, len, flag)) {
+        if (!send_data(_stream_id, p, len, flag)) {
             return 0;
         }
 
@@ -1261,9 +1290,7 @@ uint32_t Client::send_request(zval *zrequest) {
         }
     }
 
-    stream_id += 2;
-
-    return stream->stream_id;
+    return _stream_id;
 }
 
 /**
@@ -1277,6 +1304,10 @@ bool Client::write_data(uint32_t _stream_id, zval *zdata, bool end) {
         (stream->flags & SW_HTTP2_STREAM_REQUEST_END)) {
         update_error_properties(EINVAL,
                                 std_string::format("unable to found active pipeline stream#%u", _stream_id).c_str());
+        return false;
+    }
+
+    if (!check_send_queue()) {
         return false;
     }
 
@@ -1313,7 +1344,11 @@ bool Client::write_data(uint32_t _stream_id, zval *zdata, bool end) {
     }
 
     if (end) {
-        stream->flags |= SW_HTTP2_STREAM_REQUEST_END;
+        // A concurrent recv() can delete the stream while send_data() waits.
+        stream = get_stream(_stream_id);
+        if (stream) {
+            stream->flags |= SW_HTTP2_STREAM_REQUEST_END;
+        }
     }
 
     return true;
